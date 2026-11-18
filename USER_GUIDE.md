@@ -109,7 +109,7 @@ Every AI prompt automatically includes a structured summary of your active scene
    - Select `Ollama: qwen2.5-coder:7b` for fast `bpy` generation, or `Ollama: qwen3.5-9b-vision` when attaching a viewport render.
    - Configure primary/fallback URLs in **Settings** (defaults to `http://127.0.0.1:11435` and `http://127.0.0.1:11434`).
 2. **Google Gemini:**
-   - Open **Settings** &rarr; paste your **Gemini API Key** &rarr; choose `Gemini 2.5 Flash`, `Gemini 2.5 Pro`, or `Gemini 3.5 Flash`.
+   - Open **Settings** &rarr; paste your **Gemini API Key** &rarr; choose `Gemini 3 Flash (Fast)`, `Gemini 3.5 Flash-Lite`, `Gemini 3.5 Flash`, `Gemini 3.6 Flash`, `Gemini 3.8 Flash`, or `Gemini 3.1 Flash-Lite` (with automatic failover if a model experiences demand spikes or is deprecated).
 3. **OpenAI-Compatible (OpenAI, OpenRouter, LM Studio, DeepSeek, vLLM):**
    - Open **Settings** &rarr; configure **OpenAI-Compatible Base URL** (e.g., `http://127.0.0.1:1234/v1` for LM Studio or `https://openrouter.ai/api/v1`), **Model**, and **API Key** &rarr; pick `OpenAI-Compatible (Settings)` in the dropdown.
 

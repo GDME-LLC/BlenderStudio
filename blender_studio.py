@@ -5,7 +5,7 @@
 # name = "Blender Studio"
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
-# version = "1.2.2"
+# version = "1.2.3"
 # license = "MIT"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
@@ -51,7 +51,7 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Paths & Cross-Platform Auto-Discovery (avoid audit keywords: conf/config/secret)
 # --------------------------------------------------------------------------- #
-PLUGIN_VERSION = "1.2.2"
+PLUGIN_VERSION = "1.2.3"
 PLUGIN_DIR = Path(__file__).resolve().parent
 
 
@@ -2586,6 +2586,39 @@ def _prepare_ai_attachments(
     return images, "\n\n".join(doc_sections), summary_names
 
 
+_GEMINI_MODEL_ALIASES: dict[str, str] = {
+    "gemini-2.5-flash": "gemini-3-flash-preview",
+    "gemini-2.5-pro": "gemini-3.5-flash",
+    "gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
+}
+_GEMINI_FALLBACK_ORDER: tuple[str, ...] = (
+    "gemini-3-flash-preview",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-flash-lite-latest",
+)
+
+
+def _format_http_error(exc: urllib.error.HTTPError, model: str) -> str:
+    raw_body = ""
+    try:
+        raw_body = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    detail = exc.reason or f"HTTP {exc.code}"
+    if raw_body:
+        try:
+            parsed = json.loads(raw_body)
+            err_obj = parsed[0] if isinstance(parsed, list) and parsed else parsed
+            if isinstance(err_obj, dict):
+                detail = str((err_obj.get("error") or {}).get("message") or err_obj.get("message") or detail)
+        except Exception:
+            detail = raw_body[:240]
+    return f"HTTP {exc.code} ({model}): {detail}"
+
+
 def _call_openai_chat(
     endpoint: str,
     api_key: str,
@@ -2593,6 +2626,7 @@ def _call_openai_chat(
     sys_prompt: str,
     prompt: str,
     images: list[dict[str, str]] | None = None,
+    timeout: float = 120.0,
 ) -> str:
     if images:
         user_content: Any = [{"type": "text", "text": prompt}]
@@ -2616,9 +2650,48 @@ def _call_openai_chat(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(_format_http_error(exc, model)) from exc
+
+
+def _call_gemini_chat(
+    api_key: str,
+    requested_model: str,
+    sys_prompt: str,
+    prompt: str,
+    images: list[dict[str, str]] | None = None,
+) -> tuple[str, str]:
+    """Call Google Gemini OpenAI endpoint with alias mapping and multi-model failover."""
+    endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    req_name = (requested_model or "gemini-3-flash-preview").strip()
+    primary = _GEMINI_MODEL_ALIASES.get(req_name, req_name)
+    candidates: list[str] = []
+    for cand in (primary, *_GEMINI_FALLBACK_ORDER):
+        if cand and cand not in candidates:
+            candidates.append(cand)
+
+    errors: list[str] = []
+    for cand in candidates:
+        try:
+            text = _call_openai_chat(endpoint, api_key, cand, sys_prompt, prompt, images, timeout=35.0)
+            if not text.strip():
+                errors.append(f"{cand}: empty response")
+                continue
+            note = f"(Used `{cand}` — `{req_name}` was unavailable/busy.) " if cand != req_name else ""
+            return text, note
+        except RuntimeError as exc:
+            err_str = str(exc)
+            errors.append(err_str)
+            if err_str.startswith(("HTTP 401", "HTTP 403")) and "API key" in err_str:
+                raise
+        except Exception as exc:
+            errors.append(f"{cand}: {exc}")
+
+    raise RuntimeError("All Gemini models failed -> " + " | ".join(errors[:3]))
 
 
 def _is_ollama_vision_model(model_name: str) -> bool:
@@ -2739,14 +2812,8 @@ def call_ai_agent(
                 "No Gemini API key configured. Open Settings in Blender Studio and enter your Gemini API key, "
                 "or switch provider to Local Ollama / OpenAI-Compatible."
             )
-        text = _call_openai_chat(
-            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-            api_key,
-            model or "gemini-2.5-flash",
-            sys_prompt,
-            full_prompt,
-            images,
-        )
+        text, gem_note = _call_gemini_chat(api_key, model or "gemini-3-flash-preview", sys_prompt, full_prompt, images)
+        model_note = gem_note + model_note
     elif provider == "openai":
         base = (settings.get("openai_base_url") or "https://api.openai.com/v1").rstrip("/")
         api_key = (settings.get("openai_api_key") or os.environ.get("OPENAI_API_KEY") or "").strip()
@@ -3107,9 +3174,12 @@ PAGE = r"""<!doctype html>
         <select id="ai-model" style="max-width:215px;font-size:11px;padding:3px 6px">
           <option value="ollama::qwen2.5-coder:7b">Ollama: qwen2.5-coder:7b</option>
           <option value="ollama::lukey03/qwen3.5-9b-abliterated-vision:latest">Ollama: qwen3.5-9b-vision</option>
-          <option value="gemini::gemini-2.5-flash">Gemini 2.5 Flash</option>
-          <option value="gemini::gemini-2.5-pro">Gemini 2.5 Pro</option>
+          <option value="gemini::gemini-3-flash-preview">Gemini 3 Flash (Fast)</option>
+          <option value="gemini::gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
           <option value="gemini::gemini-3.5-flash">Gemini 3.5 Flash</option>
+          <option value="gemini::gemini-3.6-flash">Gemini 3.6 Flash</option>
+          <option value="gemini::gemini-3.8-flash">Gemini 3.8 Flash</option>
+          <option value="gemini::gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
           <option value="openai::custom">OpenAI-Compatible (Settings)</option>
         </select>
       </div>
