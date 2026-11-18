@@ -48,7 +48,7 @@ One-page cheat sheet for daily CAD modeling, inspection, and slicing inside Orca
 | **`+Magnet`** | Adds `Mockup_Mag_N` (`Ø6.25 × 2.20 mm`) into `Hardware_Mockups` for press-fit `6×2 mm` neodymium disc pockets. |
 | **`+M3`** | Adds `M_Screw_M3_N` (`Ø3.4 mm` clearance shaft + `5.65 mm` AF DIN 934 hex nut pocket) into `Hardware_Mockups`. |
 | **`+SG90`** | Adds `M_SG90_N` (`23.0 × 12.5 × 22.0 mm` servo body mockup) into `Hardware_Mockups`. |
-| **`Audit`** | Runs `bmesh` check on every printable mesh: reports `X × Y × Z mm`, `min_Z`, non-manifold edges, loose verts, inverted normals, and unapplied non-`1.0` scale. |
+| **`Audit`** | Runs `bmesh` check on every printable mesh: reports `X × Y × Z mm`, connected mesh `islands` (catches disconnected floating parts), `min_Z`, non-manifold edges, loose verts, inverted normals, and unapplied non-`1.0` scale. |
 
 ---
 
