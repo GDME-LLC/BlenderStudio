@@ -129,7 +129,7 @@ Each attachment appears as a removable chip showing a thumbnail (or document bad
   - Document text is injected cleanly into the prompt (up to `24,000` chars per document / `64,000` chars total), so text-only coder models (`qwen2.5-coder:7b`) can follow exact specs without needing vision.
 
 ### Options
-- **`Auto-run`:** Automatically runs the generated Python block on `:9999` and renders a fresh **Hero** diagnostic preview.
+- **`Auto-run`:** Runs the generated script on `:9999` (with automatic traceback recovery using the pre-loaded `cad` module) and renders a fresh **Hero** diagnostic preview. For local Ollama with attached images, Blender Studio automatically runs a **two-stage Vision &rarr; Coder pipeline** (first extracting dimensions/features visually with the vision model, then generating reliable `cad` / `bpy` Python with `qwen2.5-coder:7b`).
 - **`+Viewport`:** Sends the currently displayed viewport PNG alongside your prompt and uploaded files so multimodal vision models can inspect alignment, overhangs, or cosmetic tweaks visually.
 
 ---

@@ -70,9 +70,17 @@ One-page cheat sheet for daily CAD modeling, inspection, and slicing inside Orca
 
 ---
 
-## 6. Essential `bpy` Snippets & Shortcuts
+## 6. Built-In `cad` Helper & Essential `bpy` Snippets
 
 - **`Ctrl + Enter`** inside the `bpy` editor: Execute script in Blender immediately.
+- **`cad` Module (Pre-Loaded in Blender `:9999`, `1 BU = 1 mm`):**
+  - `cad.clear()` — reset scene to metric mm with `CAD_Printable_Parts`, `Hardware_Mockups`, and 3-point lights
+  - `cad.rounded_plate(name, width, depth, thickness, corner_radius=4.0, rim_width=0.0, rim_height=0.0)`
+  - `cad.box(name, width, depth, height, location=(0,0,0), corner_radius=0.0, color=(...))`
+  - `cad.cylinder(name, diameter, height, location=(0,0,0))` / `cad.tube(name, outer_diameter, inner_diameter, height)`
+  - `cad.text(name, text='...', size=10.0, height=1.2, location=(0,0,2.0))` (auto-converted to manifold `MESH`)
+  - `cad.image_relief(name, image_path=None, width=42.0, depth=28.0, height=1.2, location=(0,0,2.0))` (extrudes uploaded PNG/JPG silhouette)
+  - `cad.cut(target, cutter)` / `cad.union(target, tool)` / `cad.hole(target, diameter, depth, location)` / `cad.magnet_pocket(...)` / `cad.m3_hole(...)`
 
 ```python
 # Convex chamfer / fillet in Blender 5.x bmesh (profile=0.5 is critical!)
