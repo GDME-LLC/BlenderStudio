@@ -5,7 +5,7 @@
 # name = "Blender Studio"
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
-# version = "1.2.3"
+# version = "1.2.4"
 # license = "MIT"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import glob
+import io
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,8 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
 import zlib
 from typing import Any
 
@@ -51,7 +54,7 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Paths & Cross-Platform Auto-Discovery (avoid audit keywords: conf/config/secret)
 # --------------------------------------------------------------------------- #
-PLUGIN_VERSION = "1.2.3"
+PLUGIN_VERSION = "1.2.4"
 PLUGIN_DIR = Path(__file__).resolve().parent
 
 
@@ -319,6 +322,7 @@ def _cad_box(
     centered_z=False,
     color=None,
     mockup=False,
+    rotation=(0.0, 0.0, 0.0),
 ):
     """Create a watertight millimeter box resting on Z=location[2] (or centered if centered_z)."""
     w, d, h = max(0.05, float(width)), max(0.05, float(depth)), max(0.05, float(height))
@@ -345,6 +349,7 @@ def _cad_box(
     bm.free()
     obj = bpy.data.objects.new(name, mesh)
     obj.location = tuple(float(c) for c in location)
+    obj.rotation_euler = tuple(float(r) for r in rotation)
     col = _ensure_collection("Hardware_Mockups" if mockup else "CAD_Printable_Parts")
     _link_only(obj, col)
     if color is not None:
@@ -391,6 +396,8 @@ def _cad_boolean(target, tool, operation="DIFFERENCE", delete_tool=True):
     tool = _resolve_obj(tool)
     if target is None or tool is None:
         return target
+    if hasattr(bpy.context, "view_layer"):
+        bpy.context.view_layer.update()
     mod = target.modifiers.new(name=f"Bool_{operation}", type="BOOLEAN")
     mod.operation = operation
     if hasattr(mod, "solver"):
@@ -705,12 +712,18 @@ def _cad_image_relief(
     return obj
 
 
-def _cad_hole(target, diameter=3.4, depth=100.0, location=(0.0, 0.0, 0.0)):
-    lx, ly, lz = (float(c) for c in location)
+def _cad_hole(target, diameter=3.4, depth=100.0, location=(0.0, 0.0, 0.0), axis="Z"):
+    lx, ly, lz = _pt3(location)
     cutter = _cad_cylinder(
         name="_hole_cut", diameter=diameter, height=depth,
         location=(lx, ly, lz), centered_z=True,
     )
+    ax = str(axis or "Z").upper()
+    if ax == "X":
+        cutter.rotation_euler = (0.0, math.pi * 0.5, 0.0)
+    elif ax == "Y":
+        cutter.rotation_euler = (math.pi * 0.5, 0.0, 0.0)
+    bpy.context.view_layer.update()
     return _cad_cut(target, cutter, delete_cutter=True)
 
 
@@ -743,6 +756,370 @@ def _cad_m3_hole(target, depth=20.0, location=(0.0, 0.0, 0.0), nut_trap=True, sh
     return target
 
 
+def _pt3(pt, default_z=0.0):
+    vals = [float(c) for c in pt]
+    if len(vals) == 2:
+        return (vals[0], vals[1], float(default_z))
+    return (vals[0], vals[1], vals[2])
+
+
+def _cad_count_mesh_islands(bm):
+    if not bm.faces:
+        return 0
+    seen = set()
+    islands = 0
+    for f in bm.faces:
+        if f in seen:
+            continue
+        islands += 1
+        stack = [f]
+        seen.add(f)
+        while stack:
+            cur = stack.pop()
+            for e in cur.edges:
+                for nf in e.link_faces:
+                    if nf not in seen:
+                        seen.add(nf)
+                        stack.append(nf)
+    return islands
+
+
+def _cad_capsule_bmesh(start, end, width=10.0, thickness=6.0, end_width=None, flat_bottom_z=None, segments=24):
+    """Build a watertight manifold capsule/stadium prism (or gusseted ramp) connecting two 3D points."""
+    sx, sy, sz = _pt3(start)
+    ex, ey, ez = _pt3(end)
+    r1 = max(0.2, float(width) * 0.5)
+    r2 = max(0.2, float(end_width) * 0.5) if end_width is not None else r1
+    t = max(0.2, float(thickness))
+    seg = max(8, int(segments))
+    zs_lo = float(flat_bottom_z) if flat_bottom_z is not None else sz
+    zs_hi = max(zs_lo + 0.2, sz + t)
+    ze_lo = float(flat_bottom_z) if flat_bottom_z is not None else ez
+    ze_hi = max(ze_lo + 0.2, ez + t)
+    bm = bmesh.new()
+    for (cx, cy, r, zlo, zhi) in ((sx, sy, r1, zs_lo, zs_hi), (ex, ey, r2, ze_lo, ze_hi)):
+        for i in range(seg):
+            ang = (2.0 * math.pi * i) / seg
+            px = cx + r * math.cos(ang)
+            py = cy + r * math.sin(ang)
+            bm.verts.new((px, py, zlo))
+            bm.verts.new((px, py, zhi))
+    res = bmesh.ops.convex_hull(bm, input=list(bm.verts))
+    drop = list({
+        g for g in (res.get("geom_interior", []) + res.get("geom_unused", []))
+        if isinstance(g, bmesh.types.BMVert) and g.is_valid
+    })
+    if drop:
+        bmesh.ops.delete(bm, geom=drop, context="VERTS")
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return bm
+
+
+def _cad_strut(
+    name="Strut",
+    start=(0.0, 0.0, 0.0),
+    end=(25.0, 0.0, 0.0),
+    width=10.0,
+    thickness=6.0,
+    end_width=None,
+    flat_bottom=False,
+    flat_bottom_z=None,
+    segments=24,
+    color=None,
+    mockup=False,
+):
+    """Create a rigid manifold structural arm/gusset connecting 3D points `start` and `end`."""
+    p1 = _pt3(start)
+    p2 = _pt3(end)
+    fbz = float(flat_bottom_z) if flat_bottom_z is not None else (min(p1[2], p2[2]) if flat_bottom else None)
+    bm = _cad_capsule_bmesh(
+        start=p1, end=p2, width=width, thickness=thickness,
+        end_width=end_width, flat_bottom_z=fbz, segments=segments,
+    )
+    mesh = bpy.data.meshes.new(name)
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new(name, mesh)
+    col = _ensure_collection("Hardware_Mockups" if mockup else "CAD_Printable_Parts")
+    _link_only(obj, col)
+    if color is not None:
+        _cad_color(obj, color)
+    return obj
+
+
+def _cad_slot(target, start=(0.0, 0.0, 0.0), end=(10.0, 0.0, 0.0), diameter=3.4, depth=40.0):
+    """Cut an elongated mounting/adjustment slot between two XY(Z) points."""
+    p1 = _pt3(start)
+    p2 = _pt3(end)
+    z_mid = (p1[2] + p2[2]) * 0.5
+    h = max(1.0, float(depth))
+    bm = _cad_capsule_bmesh(
+        start=(p1[0], p1[1], z_mid - h * 0.5),
+        end=(p2[0], p2[1], z_mid - h * 0.5),
+        width=diameter,
+        thickness=h,
+        segments=24,
+    )
+    mesh = bpy.data.meshes.new("_slot_cut")
+    bm.to_mesh(mesh)
+    bm.free()
+    cutter = bpy.data.objects.new("_slot_cut", mesh)
+    _link_only(cutter, _ensure_collection("CAD_Printable_Parts"))
+    bpy.context.view_layer.update()
+    return _cad_cut(target, cutter, delete_cutter=True)
+
+
+def _cad_counterbore_hole(
+    target,
+    diameter=3.4,
+    cb_diameter=6.4,
+    cb_depth=3.5,
+    depth=40.0,
+    location=(0.0, 0.0, 0.0),
+    axis="Z",
+    flip=False,
+    segments=32,
+):
+    """Cut a through-hole plus coaxial counterbore starting at `location` inward along `-axis` (or `+axis` if flip)."""
+    if isinstance(axis, str):
+        ax_map = {"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
+        base_dir = mathutils.Vector(ax_map.get(axis.upper(), (0.0, 0.0, 1.0)))
+    else:
+        base_dir = mathutils.Vector([float(c) for c in axis])
+    if base_dir.length < 1e-6:
+        base_dir = mathutils.Vector((0.0, 0.0, 1.0))
+    d_vec = base_dir.normalized() * (1.0 if flip else -1.0)
+    up_axis = "X" if abs(d_vec.y) > 0.9 else "Y"
+    rot_eu = d_vec.to_track_quat("Z", up_axis).to_euler()
+    loc_v = mathutils.Vector(_pt3(location)) - d_vec * 0.5
+
+    thru = _cad_cylinder(
+        name="_cb_thru", diameter=diameter, height=float(depth) + 0.5,
+        location=tuple(loc_v), segments=segments,
+    )
+    thru.rotation_euler = rot_eu
+    cb = _cad_cylinder(
+        name="_cb_head", diameter=cb_diameter, height=float(cb_depth) + 0.5,
+        location=tuple(loc_v), segments=segments,
+    )
+    cb.rotation_euler = rot_eu
+    bpy.context.view_layer.update()
+    _cad_cut(target, thru, delete_cutter=True)
+    return _cad_cut(target, cb, delete_cutter=True)
+
+
+def _cad_aim_rotation(from_point, to_point, forward="-Z", up="Y"):
+    """Compute a Euler rotation tracking `forward` from `from_point` toward `to_point`."""
+    direction = mathutils.Vector(_pt3(to_point)) - mathutils.Vector(_pt3(from_point))
+    if direction.length < 1e-6:
+        return mathutils.Euler((0.0, 0.0, 0.0))
+    return direction.to_track_quat(forward, up).to_euler()
+
+
+def _cad_aim_at(target, target_point, forward="-Z", up="Y"):
+    """Rotate `target` in place so its `forward` local axis points directly at `target_point`."""
+    target = _resolve_obj(target)
+    if target is None:
+        return None
+    target.rotation_euler = _cad_aim_rotation(target.location, target_point, forward=forward, up=up)
+    if hasattr(bpy.context, "view_layer"):
+        bpy.context.view_layer.update()
+    return target
+
+
+def _cad_local_pocket(
+    target,
+    width=21.6,
+    depth=18.2,
+    height=4.0,
+    local_offset=(0.0, 0.0, 0.0),
+    corner_radius=1.0,
+    lens_hole_dia=0.0,
+    lens_offset=(0.0, 0.0),
+    through_depth=25.0,
+):
+    """Cut a rectangular pocket (and optional lens bore) aligned in `target`'s local coordinate frame."""
+    target = _resolve_obj(target)
+    if target is None:
+        return None
+    bpy.context.view_layer.update()
+    off = mathutils.Vector(_pt3(local_offset))
+    pocket = _cad_box(
+        name="_local_pocket", width=width, depth=depth, height=height,
+        location=(0.0, 0.0, 0.0), corner_radius=corner_radius,
+    )
+    pocket.matrix_world = target.matrix_world @ mathutils.Matrix.Translation(off)
+    bpy.context.view_layer.update()
+    _cad_cut(target, pocket, delete_cutter=True)
+
+    if lens_hole_dia and float(lens_hole_dia) > 0.1:
+        lo_x, lo_y = float(lens_offset[0]), float(lens_offset[1])
+        bore = _cad_cylinder(
+            name="_local_lens_bore", diameter=lens_hole_dia, height=float(through_depth),
+            location=(0.0, 0.0, 0.0), centered_z=True, segments=36,
+        )
+        bore.matrix_world = target.matrix_world @ mathutils.Matrix.Translation(mathutils.Vector((lo_x, lo_y, 0.0)))
+        bpy.context.view_layer.update()
+        _cad_cut(target, bore, delete_cutter=True)
+    return target
+
+
+def _cad_oriented_box(
+    name="Housing",
+    width=26.0,
+    depth=22.0,
+    height=10.0,
+    location=(0.0, 0.0, 0.0),
+    aim_at=None,
+    rotation=None,
+    pocket_size=None,
+    pocket_offset=(0.0, 0.0, 0.0),
+    aperture_diameter=0.0,
+    usb_slot_size=None,
+    corner_radius=2.5,
+    color=None,
+    mockup=False,
+):
+    """Create a housing with local-frame pocket/aperture/USB cuts, aimed and baked into world verts."""
+    w, d, h = max(1.0, float(width)), max(1.0, float(depth)), max(1.0, float(height))
+    obj = _cad_box(
+        name=name, width=w, depth=d, height=h,
+        location=(0.0, 0.0, 0.0), corner_radius=corner_radius,
+        color=color, mockup=mockup,
+    )
+    if pocket_size is not None and len(pocket_size) >= 3:
+        pw, pd, ph = float(pocket_size[0]), float(pocket_size[1]), float(pocket_size[2])
+        px, py, pz = _pt3(pocket_offset)
+        p_cut = _cad_box(
+            name="_ob_pocket", width=pw, depth=pd, height=ph + 2.0,
+            location=(px, py, max(-0.5, h - ph + pz)), corner_radius=min(1.0, float(corner_radius) * 0.5),
+        )
+        _cad_cut(obj, p_cut, delete_cutter=True)
+
+    if aperture_diameter and float(aperture_diameter) > 0.1:
+        px, py, _ = _pt3(pocket_offset)
+        ap = _cad_cylinder(
+            name="_ob_aperture", diameter=float(aperture_diameter), height=h + 4.0,
+            location=(px, py, -2.0), segments=36,
+        )
+        _cad_cut(obj, ap, delete_cutter=True)
+
+    if usb_slot_size is not None and len(usb_slot_size) >= 2:
+        sw, sh = float(usb_slot_size[0]), float(usb_slot_size[1])
+        ph_ref = float(pocket_size[2]) if (pocket_size is not None and len(pocket_size) >= 3) else h * 0.6
+        usb_cut = _cad_box(
+            name="_ob_usb", width=sw, depth=d * 0.65, height=sh + 1.0,
+            location=(0.0, -d * 0.42, max(-0.5, h - ph_ref - 0.5)), corner_radius=0.8,
+        )
+        _cad_cut(obj, usb_cut, delete_cutter=True)
+
+    loc_v = mathutils.Vector(_pt3(location))
+    if aim_at is not None:
+        direction = mathutils.Vector(_pt3(aim_at)) - loc_v
+        if direction.length > 1e-6:
+            d_n = direction.normalized()
+            up_ax = "X" if abs(d_n.y) > 0.9 else "Y"
+            rot_eu = d_n.to_track_quat("Z", up_ax).to_euler()
+        else:
+            rot_eu = mathutils.Euler((0.0, 0.0, 0.0))
+    elif rotation is not None:
+        rot_eu = mathutils.Euler(tuple(float(r) for r in rotation))
+    else:
+        rot_eu = mathutils.Euler((0.0, 0.0, 0.0))
+
+    xform = mathutils.Matrix.Translation(loc_v) @ rot_eu.to_matrix().to_4x4()
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bmesh.ops.transform(bm, matrix=xform, verts=bm.verts)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.location = (0.0, 0.0, 0.0)
+    obj.rotation_euler = (0.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    return obj
+
+
+def _cad_place_on_bed(target, z_floor=0.0):
+    """Translate `target` vertically so its world bounding-box bottom rests at `z_floor`."""
+    target = _resolve_obj(target)
+    if target is None or target.type != "MESH" or not target.data.vertices:
+        return target
+    min_z = min((target.matrix_world @ v.co).z for v in target.data.vertices)
+    dz = float(z_floor) - min_z
+    if abs(dz) > 1e-5:
+        if target.location.length < 1e-5 and sum(abs(r) for r in target.rotation_euler) < 1e-5:
+            bm = bmesh.new()
+            bm.from_mesh(target.data)
+            bmesh.ops.translate(bm, verts=bm.verts, vec=(0.0, 0.0, dz))
+            bm.to_mesh(target.data)
+            bm.free()
+        else:
+            target.location.z += dz
+    bpy.context.view_layer.update()
+    return target
+
+
+def _cad_audit():
+    """Inspect all printable meshes for manifoldness, connected islands, scale, and Z floor."""
+    results = []
+    issue_msgs = []
+    issues = 0
+    for o in sorted(bpy.data.objects, key=lambda x: x.name):
+        if o.type != "MESH" or o.name.startswith(_MOCKUP_PREFIXES):
+            continue
+        cols = " ".join(c.name for c in o.users_collection).lower()
+        if ("mockup" in cols or "plugs" in cols) and "printable" not in cols:
+            continue
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        non_manifold = sum(1 for e in bm.edges if not e.is_manifold)
+        loose_verts = sum(1 for v in bm.verts if not v.link_edges)
+        islands = _cad_count_mesh_islands(bm)
+        vol = bm.calc_volume(signed=True)
+        bm.free()
+        corners = [o.matrix_world @ mathutils.Vector(c) for c in o.bound_box]
+        min_z = min((c.z for c in corners), default=0.0)
+        max_z = max((c.z for c in corners), default=0.0)
+        scale_ok = all(abs(s - 1.0) < 1e-3 for s in o.scale)
+        flags = []
+        if non_manifold:
+            flags.append(f"non-manifold={non_manifold}")
+        if loose_verts:
+            flags.append(f"loose_verts={loose_verts}")
+        if islands > 1:
+            flags.append(f"disconnected_islands={islands}")
+        if islands == 0:
+            flags.append("empty_mesh")
+        if vol < 0:
+            flags.append("inverted_normals")
+        if not scale_ok:
+            flags.append(f"unapplied_scale={[round(s,3) for s in o.scale]}")
+        if min_z < -0.5:
+            flags.append(f"below_bed(min_Z={min_z:.2f}mm)")
+        if flags:
+            issues += 1
+            issue_msgs.append(f"{o.name}: " + ", ".join(flags))
+        info = {
+            "name": o.name,
+            "dims": [round(o.dimensions.x, 2), round(o.dimensions.y, 2), round(o.dimensions.z, 2)],
+            "min_z": round(min_z, 2),
+            "max_z": round(max_z, 2),
+            "islands": islands,
+            "non_manifold": non_manifold,
+            "loose_verts": loose_verts,
+            "flags": flags,
+        }
+        results.append(info)
+        status = "OK" if not flags else "WARN: " + ", ".join(flags)
+        print(f"  [Audit] {o.name}: {info['dims'][0]}x{info['dims'][1]}x{info['dims'][2]}mm | islands={islands} | min_Z={min_z:.2f}mm | {status}")
+    if not results:
+        issue_msgs.append("No printable mesh objects found in scene.")
+        print("  [Audit] WARN: No printable mesh objects found in scene.")
+    return {"ok": issues == 0 and len(results) > 0, "issues": issues, "issue_messages": issue_msgs, "objects": results}
+
+
 def _build_cad_module():
     mod = types.ModuleType("cad")
     mod.clear = _cad_clear
@@ -760,6 +1137,16 @@ def _build_cad_module():
     mod.hole = _cad_hole
     mod.magnet_pocket = _cad_magnet_pocket
     mod.m3_hole = _cad_m3_hole
+    mod.strut = _cad_strut
+    mod.slot = _cad_slot
+    mod.counterbore_hole = _cad_counterbore_hole
+    mod.oriented_box = _cad_oriented_box
+    mod.place_on_bed = _cad_place_on_bed
+    mod.aim_rotation = _cad_aim_rotation
+    mod.aim_at = _cad_aim_at
+    mod.local_pocket = _cad_local_pocket
+    mod.audit = _cad_audit
+    mod.audit_geometry = _cad_audit
     return mod
 
 
@@ -958,9 +1345,9 @@ def _log_last_exec(code_str, status, stdout_txt, stderr_txt):
         os.makedirs(STUDIO_DIR, exist_ok=True)
         with open(LAST_EXEC_LOG, "w", encoding="utf-8") as fh:
             fh.write(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} | status={status} ===\n")
-            fh.write("--- CODE ---\n" + code_str[:4000] + "\n")
+            fh.write("--- CODE ---\n" + code_str[:24000] + "\n")
             if stdout_txt:
-                fh.write("--- STDOUT ---\n" + stdout_txt[:2000] + "\n")
+                fh.write("--- STDOUT ---\n" + stdout_txt[:4000] + "\n")
             if stderr_txt:
                 fh.write("--- STDERR ---\n" + stderr_txt[:4000] + "\n")
     except Exception:
@@ -977,16 +1364,23 @@ def _self_heal_with_ollama(broken_code, tb_text):
         "Available `cad` functions (NO other cad functions exist):\n"
         "- cad.clear()\n"
         "- cad.rounded_plate(name, width, depth, thickness, corner_radius=4.0, rim_width=0.0, rim_height=0.0, location=(0,0,0), color=(0.1,0.12,0.16,1.0), rim_color=(0.91,0.49,0.05,1.0))\n"
-        "- cad.box(name, width, depth, height, location=(0,0,0), corner_radius=0.0, bevel=0.0, color=(0.7,0.7,0.7,1.0))\n"
-        "- cad.cylinder(name, diameter=10.0, height=5.0, location=(0,0,0), color=(0.7,0.7,0.7,1.0))\n"
+        "- cad.box(name, width, depth, height, location=(0,0,0), corner_radius=0.0, bevel=0.0, color=(0.7,0.7,0.7,1.0), mockup=False, rotation=(0,0,0))\n"
+        "- cad.cylinder(name, diameter=10.0, height=5.0, location=(0,0,0), color=(0.7,0.7,0.7,1.0), mockup=False)\n"
         "- cad.tube(name, outer_diameter=12.0, inner_diameter=8.0, height=10.0, location=(0,0,0), color=None)\n"
+        "- cad.strut(name, start=(x1,y1,z1), end=(x2,y2,z2), width=10.0, thickness=6.0, flat_bottom=False, flat_bottom_z=None, color=None)\n"
+        "- cad.oriented_box(name, width=26.0, depth=22.0, height=10.0, location=(x,y,z), aim_at=(tx,ty,tz), pocket_size=(pw,pd,ph), aperture_diameter=9.5, usb_slot_size=(sw,sh), corner_radius=2.5, color=None)\n"
+        "- cad.place_on_bed(target, z_floor=0.0)\n"
         "- cad.text(name, text='HELLO', size=10.0, height=1.2, location=(0,0,2.0), color=(0.91,0.49,0.05,1.0))\n"
         "- cad.image_relief(name='Logo_Relief', image_path=None, width=42.0, depth=28.0, height=1.2, location=(0,0,2.0), color=(0.91,0.49,0.05,1.0))\n"
         "- cad.bevel(target, offset=1.0, segments=4) / cad.color(target, rgba)\n"
-        "- cad.cut(target, cutter) / cad.union(target, tool) / cad.hole(target, diameter=3.4, depth=100.0, location=(0,0,0))\n"
-        "- cad.magnet_pocket(target, diameter=6.25, depth=2.20, location=(0,0,0))\n"
-        "- cad.m3_hole(target, depth=20.0, location=(0,0,0))\n"
-        "NEVER use `bpy` or `bmesh` directly unless strictly needed; prefer `cad.clear()`, `cad.rounded_plate(...)`, `cad.box(...)`, `cad.text(...)`.\n"
+        "- cad.cut(target, cutter) / cad.union(target, tool) / cad.hole(target, diameter=3.4, depth=100.0, location=(0,0,0), axis='Z')\n"
+        "- cad.slot(target, start=(x1,y1,z), end=(x2,y2,z), diameter=3.4, depth=40.0)\n"
+        "- cad.counterbore_hole(target, diameter=3.4, cb_diameter=6.4, cb_depth=3.5, depth=40.0, location=(x,y,z), axis='Z', flip=False)\n"
+        "- cad.aim_at(obj, target_point, forward='-Z', up='Y')\n"
+        "- cad.local_pocket(target, width=21.6, depth=18.2, height=4.0, local_offset=(0,0,3.5), corner_radius=1.0, lens_hole_dia=0.0, lens_offset=(0,0))\n"
+        "- cad.magnet_pocket(target, diameter=6.25, depth=2.20, location=(0,0,0)) / cad.m3_hole(target, depth=20.0, location=(0,0,0))\n"
+        "- cad.audit_geometry()\n"
+        "NEVER use `bpy` or `bmesh` directly unless strictly needed; prefer `cad.*` helpers.\n"
         "Preserve the intended dimensions, text, borders, holes, and uploaded images from the broken script.\n"
         "Output ONLY ONE ```python``` block starting with `import cad` and `cad.clear()`."
     )
@@ -2223,7 +2617,7 @@ if bsdf:
 obj.data.materials.append(mat)
 print(f"Created {name} (23.0 x 12.5 x 22.0mm SG90 body mockup)")
 ''',
-    "print_audit": '''# 3D Print Readiness Audit (manifold check, scale, Z-floor)
+    "print_audit": '''# 3D Print Readiness Audit (manifold check, connected islands, scale, Z-floor)
 import bpy, bmesh, mathutils
 mockup_prefixes = ("M_", "Mockup_", "Vis_", "Plug_", "Ground_Shadow", "Drawing_Paper", "Floor")
 print("=== 3D Print Readiness Audit ===")
@@ -2238,6 +2632,21 @@ for o in sorted(bpy.data.objects, key=lambda x: x.name):
     bm.from_mesh(o.data)
     non_manifold = sum(1 for e in bm.edges if not e.is_manifold)
     loose_verts = sum(1 for v in bm.verts if not v.link_edges)
+    seen = set()
+    islands = 0
+    for f in bm.faces:
+        if f in seen:
+            continue
+        islands += 1
+        stack = [f]
+        seen.add(f)
+        while stack:
+            cur = stack.pop()
+            for e in cur.edges:
+                for nf in e.link_faces:
+                    if nf not in seen:
+                        seen.add(nf)
+                        stack.append(nf)
     vol = bm.calc_volume(signed=True)
     bm.free()
     corners = [o.matrix_world @ mathutils.Vector(c) for c in o.bound_box]
@@ -2248,14 +2657,20 @@ for o in sorted(bpy.data.objects, key=lambda x: x.name):
         flags.append(f"non-manifold={non_manifold}")
     if loose_verts:
         flags.append(f"loose_verts={loose_verts}")
+    if islands > 1:
+        flags.append(f"DISCONNECTED_FLOATING_PARTS(islands={islands})")
+    elif islands == 0:
+        flags.append("empty_mesh")
     if vol < 0:
         flags.append("inverted_normals")
     if not scale_ok:
         flags.append(f"unapplied_scale={[round(s,3) for s in o.scale]}")
+    if min_z < -0.5:
+        flags.append(f"below_bed(min_Z={min_z:.2f}mm)")
     if flags:
         issues += 1
     status = "OK" if not flags else "WARN: " + ", ".join(flags)
-    print(f"  {o.name}: {o.dimensions.x:.2f}x{o.dimensions.y:.2f}x{o.dimensions.z:.2f}mm | min_Z={min_z:.2f}mm | {status}")
+    print(f"  {o.name}: {o.dimensions.x:.2f}x{o.dimensions.y:.2f}x{o.dimensions.z:.2f}mm | islands={islands} | min_Z={min_z:.2f}mm | {status}")
 print(f"Audit complete: {issues} object(s) flagged.")
 ''',
 }
@@ -2298,25 +2713,35 @@ def _build_ai_system_prompt(scene_info: dict[str, Any] | None) -> str:
         scene_lines.append("Active scene: No scene metadata loaded (assume empty 1 BU = 1 mm workspace).")
 
     return (
-        "You are an expert Blender 5.2 procedural CAD engineer building 3D-printable mechanical parts.\n"
-        "Units: 1 Blender Unit = 1.0 mm. Keep scale at (1, 1, 1). All `cad` primitives use `location=(x, y, z)` as the bottom face Z (so to stack flush on a 2.0mm plate at Z=0, place text/relief at `location=(0, 0, 2.0)`).\n\n"
+        "You are an expert Blender 5.2 procedural CAD engineer building mechanically functional, 3D-printable parts.\n"
+        "Units: 1 Blender Unit = 1.0 mm. Keep scale at (1, 1, 1). In `cad`, `location=(x, y, z)` sets the bottom face Z (unless `centered_z=True`).\n\n"
+        "MANDATORY MECHANICAL WORKFLOW (DO NOT GUESS ISOLATED FLOATING BOXES):\n"
+        "1. HARDWARE MOCKUPS FIRST: Before cutting or connecting brackets, model the mating hardware objects (`M_*`, `mockup=True`) in `Hardware_Mockups` (e.g., extruder body, nozzle tip target, carriage holes, PCB board/camera lens) at true physical coordinates so alignment, bolt clearances, and camera sightlines are verified.\n"
+        "2. CONNECTED STRUCTURAL GEOMETRY: NEVER rotate a `cad.box(...)` in place hoping it bridges two distant points—rotating around a part center misses targets and leaves disconnected floating islands! ALWAYS connect offset brackets/pods back to the main plate using `cad.strut(start=p1, end=p2, width=..., thickness=..., flat_bottom=True)` and union them cleanly (`cad.union`).\n"
+        "3. ORIENTED HOUSINGS & LOCAL POCKETS: NEVER boolean-cut a rotated housing with an unrotated world box! Use `cad.oriented_box(name=..., width=..., depth=..., height=..., location=..., aim_at=(tx,ty,tz), pocket_size=(pw,pd,ph), aperture_diameter=..., usb_slot_size=(sw,sh), corner_radius=...)` which cuts pockets/apertures/USB channels in local coordinates first, aims `+Z` at `aim_at`, and bakes clean manifold geometry.\n"
+        "4. PRINT BED ORIENTATION & AUDIT: Keep printable base faces resting cleanly at `Z = 0.0` (avoid sub-bed hangs; call `cad.place_on_bed(part)` if needed) and ALWAYS call `cad.audit_geometry()` at the end of your script so disconnected islands (`islands > 1`) and non-manifold edges are caught.\n\n"
         "RECOMMENDED BUILT-IN `cad` MODULE (pre-loaded in Blender, 1 BU = 1 mm, zero boilerplate):\n"
-        "  cad.clear()  # resets printable objects, sets mm units & 3-point lights (omit if editing existing parts)\n"
+        "  cad.clear()  # resets printable/mockup objects, sets mm units & 3-point lights (omit if editing existing parts)\n"
         "  cad.rounded_plate(name='Card_Base', width=85.6, depth=54.0, thickness=2.0, corner_radius=4.0, rim_width=2.2, rim_height=1.0)\n"
-        "  cad.box(name='Body', width=40.0, depth=30.0, height=12.0, location=(0, 0, 0), corner_radius=2.0, color=(0.2, 0.25, 0.3, 1.0))\n"
-        "  cad.cylinder(name='Boss', diameter=10.0, height=8.0, location=(0, 0, 0), segments=64, color=(0.2, 0.25, 0.3, 1.0))\n"
+        "  cad.box(name='Body', width=40.0, depth=30.0, height=12.0, location=(0, 0, 0), corner_radius=2.0, color=(0.2, 0.25, 0.3, 1.0), mockup=False)\n"
+        "  cad.cylinder(name='Boss', diameter=10.0, height=8.0, location=(0, 0, 0), segments=64, color=(0.2, 0.25, 0.3, 1.0), mockup=False)\n"
         "  cad.tube(name='Bushing', outer_diameter=12.0, inner_diameter=8.2, height=10.0, location=(0, 0, 0))\n"
-        "  cad.text(name='Logo_Text', text='BLENDER STUDIO', size=10.0, height=1.2, location=(0, 0, 2.0), color=(0.91, 0.49, 0.05, 1.0))\n"
-        "  cad.image_relief(name='Logo_Relief', image_path=None, width=42.0, depth=28.0, height=1.2, location=(0, 0, 2.0))  # extrudes uploaded image\n"
-        "  cad.cut(target, cutter) / cad.union(target, tool) / cad.bevel(target, offset=1.0) / cad.hole(target, diameter=3.4, depth=50.0, location=(x, y, 0))\n"
+        "  cad.strut(name='Arm', start=(x1,y1,z1), end=(x2,y2,z2), width=12.0, thickness=6.0, end_width=None, flat_bottom=True, color=...)\n"
+        "  cad.oriented_box(name='Pod', width=26.0, depth=22.0, height=12.0, location=(x,y,z), aim_at=(tx,ty,tz), pocket_size=(pw,pd,ph), aperture_diameter=9.5, usb_slot_size=(10.5,5.0), corner_radius=2.5)\n"
+        "  cad.hole(target, diameter=3.4, depth=50.0, location=(x, y, z), axis='Z')\n"
+        "  cad.slot(target, start=(x1, y1, z), end=(x2, y2, z), diameter=3.4, depth=40.0)\n"
+        "  cad.counterbore_hole(target, diameter=3.4, cb_diameter=6.4, cb_depth=3.5, depth=40.0, location=(x, y, z), axis='Z', flip=False)\n"
+        "  cad.cut(target, cutter) / cad.union(target, tool) / cad.intersect(target, tool) / cad.bevel(target, offset=1.0)\n"
         "  cad.magnet_pocket(target, diameter=6.25, depth=2.20, location=(x, y, 0)) / cad.m3_hole(target, depth=20.0, location=(x, y, 0))\n"
-        "  cad.color(obj, (r, g, b, 1.0), roughness=0.35)\n\n"
+        "  cad.text(name='Label', text='PART', size=10.0, height=1.2, location=(0, 0, 2.0), color=(0.91, 0.49, 0.05, 1.0))\n"
+        "  cad.image_relief(name='Logo_Relief', image_path=None, width=42.0, depth=28.0, height=1.2, location=(0, 0, 2.0))\n"
+        "  cad.place_on_bed(target, z_floor=0.0) / cad.color(obj, (r, g, b, 1.0), roughness=0.35) / cad.audit_geometry()\n\n"
         "LOW-LEVEL `bpy`/`bmesh` RULES (if not using `cad`):\n"
         "- Place printable geometry in `CAD_Printable_Parts` and mockups (`M_*`, `Mockup_*`) in `Hardware_Mockups`.\n"
         "- Use `bmesh` (`profile=0.5` on `bmesh.ops.bevel(bm, geom=..., offset=..., segments=4, profile=0.5)`) — NEVER invent `primitive_cube`, `shade_convert`, or `extrude_region_move`.\n"
         "- Convert any `FONT`/`CURVE` objects to `MESH` with `bpy.ops.object.convert(target='MESH')`.\n"
         "- Tolerances: +0.20 mm slide clearance, +0.30 mm clamp clearance, +0.25 mm magnet press-fit.\n"
-        "Output a 1-2 sentence summary followed by ONE complete, self-contained ```python``` block.\n\n"
+        "Output a 1-2 sentence summary followed by ONE complete, self-contained ```python``` block ending with `cad.audit_geometry()`.\n\n"
         "Current Scene Context:\n" + "\n".join(scene_lines)
     )
 
@@ -2497,11 +2922,179 @@ def _extract_pdf_text(raw_bytes: bytes, max_chars: int = 24000) -> str:
     return text
 
 
+def _extract_step_summary(raw_bytes: bytes, max_holes: int = 80) -> str:
+    """Extract bounding boxes, solid names, and cylindrical hole patterns from an ISO-10303-21 STEP file."""
+    text = raw_bytes.decode("utf-8", errors="ignore")
+    defs = {
+        int(m.group(1)): m.group(2).strip()
+        for m in re.finditer(r"#(\d+)\s*=\s*([^;]+);", text)
+    }
+    pts: dict[int, tuple[float, float, float]] = {}
+    dirs: dict[int, tuple[float, float, float]] = {}
+    axes: dict[int, tuple[Any, Any, Any]] = {}
+    for eid, body in defs.items():
+        if body.startswith("CARTESIAN_POINT"):
+            m = re.match(
+                r"CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*([-\d.Ee+]+)\s*,\s*([-\d.Ee+]+)\s*,\s*([-\d.Ee+]+)\s*\)\s*\)",
+                body,
+            )
+            if m:
+                pts[eid] = (float(m.group(1)), float(m.group(2)), float(m.group(3)))
+        elif body.startswith("DIRECTION"):
+            m = re.match(
+                r"DIRECTION\s*\(\s*'[^']*'\s*,\s*\(\s*([-\d.Ee+]+)\s*,\s*([-\d.Ee+]+)\s*,\s*([-\d.Ee+]+)\s*\)\s*\)",
+                body,
+            )
+            if m:
+                dirs[eid] = (float(m.group(1)), float(m.group(2)), float(m.group(3)))
+    for eid, body in defs.items():
+        if body.startswith("AXIS2_PLACEMENT_3D"):
+            m = re.match(r"AXIS2_PLACEMENT_3D\s*\(\s*'[^']*'\s*,\s*#(\d+)\s*,\s*#(\d+)\s*,\s*#(\d+)\s*\)", body)
+            if m:
+                axes[eid] = (pts.get(int(m.group(1))), dirs.get(int(m.group(2))), dirs.get(int(m.group(3))))
+
+    lines = ["STEP CAD Geometry Summary (units: mm if SI standard):"]
+    solids = []
+    for eid, body in defs.items():
+        m = re.match(r"MANIFOLD_SOLID_BREP\s*\(\s*'([^']*)'\s*,\s*#(\d+)\s*\)", body)
+        if m:
+            solids.append((m.group(1) or f"Solid_{eid}", int(m.group(2))))
+
+    def _collect_refs(root_id: int) -> set[int]:
+        seen: set[int] = set()
+        stack = [root_id]
+        while stack:
+            cur = stack.pop()
+            if cur in seen or cur not in defs:
+                continue
+            seen.add(cur)
+            for ref in re.findall(r"#(\d+)", defs[cur]):
+                stack.append(int(ref))
+        return seen
+
+    if solids:
+        for sname, shell_id in solids[:12]:
+            s_ids = _collect_refs(shell_id)
+            s_pts = [pts[k] for k in s_ids if k in pts]
+            if not s_pts:
+                continue
+            xs = [p[0] for p in s_pts]
+            ys = [p[1] for p in s_pts]
+            zs = [p[2] for p in s_pts]
+            lines.append(
+                f"Solid `{sname}`: X={min(xs):.2f}..{max(xs):.2f} (w={max(xs)-min(xs):.2f}), "
+                f"Y={min(ys):.2f}..{max(ys):.2f} (d={max(ys)-min(ys):.2f}), "
+                f"Z={min(zs):.2f}..{max(zs):.2f} (h={max(zs)-min(zs):.2f}) mm"
+            )
+    elif pts:
+        all_p = list(pts.values())
+        xs = [p[0] for p in all_p]
+        ys = [p[1] for p in all_p]
+        zs = [p[2] for p in all_p]
+        lines.append(
+            f"Overall BBox ({len(all_p)} pts): X={min(xs):.2f}..{max(xs):.2f} ({max(xs)-min(xs):.2f}mm), "
+            f"Y={min(ys):.2f}..{max(ys):.2f} ({max(ys)-min(ys):.2f}mm), "
+            f"Z={min(zs):.2f}..{max(zs):.2f} ({max(zs)-min(zs):.2f}mm)"
+        )
+
+    cyls = []
+    for body in defs.values():
+        if body.startswith("CYLINDRICAL_SURFACE"):
+            m = re.match(r"CYLINDRICAL_SURFACE\s*\(\s*'[^']*'\s*,\s*#(\d+)\s*,\s*([-\d.Ee+]+)\s*\)", body)
+            if m:
+                aid, r = int(m.group(1)), float(m.group(2))
+                pt, d_ax, _ = axes.get(aid, (None, None, None))
+                if pt and d_ax:
+                    cyls.append((
+                        round(r * 2.0, 2),
+                        tuple(round(v, 2) for v in pt),
+                        tuple(round(abs(v), 2) for v in d_ax),
+                    ))
+    uniq_cyls = sorted(set(cyls), key=lambda x: (x[2], x[0], x[1]))
+    if uniq_cyls:
+        lines.append(f"Cylindrical Holes / Bosses ({len(uniq_cyls)} unique):")
+        for dia, pt, ax in uniq_cyls[:max_holes]:
+            lines.append(f"  - dia={dia:5.2f}mm @ {pt} axis={ax}")
+    return "\n".join(lines)
+
+
+def _extract_3mf_summary(raw_bytes: bytes) -> tuple[str, str]:
+    """Extract mesh object bounding boxes and embedded thumbnail PNG (base64) from a .3mf archive."""
+    lines = ["3MF CAD Archive Summary:"]
+    thumb_b64 = ""
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+            names = zf.namelist()
+            for cand in ("Metadata/thumbnail.png", "Metadata/plate_1.png", "Thumbnails/thumbnail.png"):
+                if cand in names:
+                    thumb_b64 = base64.b64encode(zf.read(cand)).decode("ascii")
+                    break
+            model_files = [n for n in names if n.lower().endswith(".model")]
+            for mf in model_files[:4]:
+                root = ET.fromstring(zf.read(mf))
+                objs = [el for el in root.iter() if el.tag.endswith("object")]
+                for obj in objs:
+                    verts = [
+                        (float(v.attrib["x"]), float(v.attrib["y"]), float(v.attrib["z"]))
+                        for v in obj.iter()
+                        if v.tag.endswith("vertex") and "x" in v.attrib
+                    ]
+                    if not verts:
+                        continue
+                    xs, ys, zs = [p[0] for p in verts], [p[1] for p in verts], [p[2] for p in verts]
+                    oid = obj.attrib.get("id", "?")
+                    oname = obj.attrib.get("name", f"Object_{oid}")
+                    lines.append(
+                        f"Object `{oname}` ({len(verts)} verts): "
+                        f"span=({max(xs)-min(xs):.2f} x {max(ys)-min(ys):.2f} x {max(zs)-min(zs):.2f}) mm | "
+                        f"X={min(xs):.2f}..{max(xs):.2f}, Y={min(ys):.2f}..{max(ys):.2f}, Z={min(zs):.2f}..{max(zs):.2f}"
+                    )
+    except Exception as exc:
+        lines.append(f"(Failed to parse 3MF archive: {exc})")
+    return "\n".join(lines), thumb_b64
+
+
+def _extract_stl_summary(raw_bytes: bytes) -> str:
+    """Extract triangle count and exact mm bounding box from binary or ASCII STL bytes."""
+    mn = [float("inf"), float("inf"), float("inf")]
+    mx = [float("-inf"), float("-inf"), float("-inf")]
+    tri_count = 0
+    is_ascii = raw_bytes[:5].lower() == b"solid" and b"facet normal" in raw_bytes[:2048].lower()
+    if is_ascii:
+        for m in re.finditer(rb"vertex\s+([-\d.Ee+]+)\s+([-\d.Ee+]+)\s+([-\d.Ee+]+)", raw_bytes):
+            tri_count += 1
+            for i in range(3):
+                val = float(m.group(i + 1))
+                mn[i] = min(mn[i], val)
+                mx[i] = max(mx[i], val)
+        tri_count //= 3
+    elif len(raw_bytes) >= 84:
+        expected_tris = struct.unpack_from("<I", raw_bytes, 80)[0]
+        if 84 + expected_tris * 50 <= len(raw_bytes) + 64:
+            tri_count = expected_tris
+            off = 84
+            for _ in range(min(tri_count, (len(raw_bytes) - 84) // 50)):
+                vals = struct.unpack_from("<12f", raw_bytes, off)
+                for vi in (3, 6, 9):
+                    for ax in range(3):
+                        v = vals[vi + ax]
+                        mn[ax] = min(mn[ax], v)
+                        mx[ax] = max(mx[ax], v)
+                off += 50
+    if tri_count <= 0 or mn[0] == float("inf"):
+        return "STL file attached (could not parse vertex bounds)."
+    return (
+        f"STL Mesh Summary ({'ASCII' if is_ascii else 'binary'}, {tri_count} triangles):\n"
+        f"  dims = ({mx[0]-mn[0]:.2f} x {mx[1]-mn[1]:.2f} x {mx[2]-mn[2]:.2f}) mm\n"
+        f"  X={mn[0]:.2f}..{mx[0]:.2f}, Y={mn[1]:.2f}..{mx[1]:.2f}, Z={mn[2]:.2f}..{mx[2]:.2f} mm"
+    )
+
+
 def _prepare_ai_attachments(
     attachments: list[dict[str, Any]] | None,
     viewport_b64: str = "",
 ) -> tuple[list[dict[str, str]], str, list[str]]:
-    """Normalize image and document attachments for multi-modal and text LLM calls."""
+    """Normalize image and document/CAD attachments for multi-modal and text LLM calls."""
     images: list[dict[str, str]] = []
     doc_sections: list[str] = []
     summary_names: list[str] = []
@@ -2543,8 +3136,28 @@ def _prepare_ai_attachments(
                 summary_names.append(f"{name} (image)")
             continue
 
-        is_pdf = kind == "pdf" or name.lower().endswith(".pdf") or mime == "application/pdf"
-        if is_pdf:
+        low_name = name.lower()
+        is_step = kind == "step" or low_name.endswith((".step", ".stp"))
+        is_3mf = kind == "3mf" or low_name.endswith(".3mf")
+        is_stl = kind == "stl" or low_name.endswith(".stl")
+        is_pdf = kind == "pdf" or low_name.endswith(".pdf") or mime == "application/pdf"
+
+        if is_step:
+            raw_bytes = base64.b64decode(raw_b64) if raw_b64 else str(att.get("text") or "").encode("utf-8", errors="ignore")
+            doc_text = _extract_step_summary(raw_bytes)
+            tag = "step"
+        elif is_3mf:
+            doc_text = ""
+            if raw_b64:
+                raw_bytes = base64.b64decode(raw_b64)
+                doc_text, thumb_b64 = _extract_3mf_summary(raw_bytes)
+                if thumb_b64:
+                    images.append({"name": f"{name} thumbnail", "mime": "image/png", "b64": thumb_b64, "path": ""})
+            tag = "3mf"
+        elif is_stl:
+            doc_text = _extract_stl_summary(base64.b64decode(raw_b64)) if raw_b64 else ""
+            tag = "stl"
+        elif is_pdf:
             doc_text = ""
             if raw_b64:
                 try:
@@ -3184,11 +3797,11 @@ PAGE = r"""<!doctype html>
         </select>
       </div>
       <div class="ai-box" id="ai-box">
-        <textarea id="ai-prompt" rows="3" placeholder="Describe a part or edit, or drop / paste reference images &amp; docs (.md, .pdf, .py, .scad, .json)..."></textarea>
-        <input type="file" id="ai-file-input" multiple accept="image/*,.md,.txt,.json,.csv,.py,.scad,.yaml,.yml,.xml,.svg,.html,.pdf,.log,.ini,.toml" style="display:none">
+        <textarea id="ai-prompt" rows="3" placeholder="Describe a part or edit, or drop / paste reference images, docs &amp; CAD (.step, .3mf, .stl, .md, .pdf, .py)..."></textarea>
+        <input type="file" id="ai-file-input" multiple accept="image/*,.step,.stp,.3mf,.stl,.md,.txt,.json,.csv,.py,.scad,.yaml,.yml,.xml,.svg,.html,.pdf,.log,.ini,.toml" style="display:none">
         <div class="attach-bar" id="ai-attachments" style="display:none"></div>
         <div class="row" style="margin-top:6px">
-          <button class="sm" id="btn-ai-attach" title="Attach pictures (.png, .jpg, .webp, .gif, .bmp) or documents (.md, .txt, .py, .scad, .json, .csv, .pdf) — or drag &amp; drop / paste into prompt">+ Image / Doc</button>
+          <button class="sm" id="btn-ai-attach" title="Attach pictures, STEP/3MF/STL CAD models, or documents (.md, .py, .scad, .pdf) — or drag &amp; drop / paste into prompt">+ Image / CAD / Doc</button>
           <button class="sm danger" id="btn-ai-clear-att" style="display:none" title="Remove all attached reference files">Clear</button>
           <label class="chk"><input type="checkbox" id="chk-auto-run" checked> Auto-run</label>
           <label class="chk" title="Also include the current viewport diagnostic render"><input type="checkbox" id="chk-attach-img"> +Viewport</label>
@@ -3572,6 +4185,7 @@ function addAiFiles(fileList) {
   if (!fileList || !fileList.length) return;
   const maxBytes = 15 * 1024 * 1024;
   const docExts = new Set(['md','txt','json','csv','py','scad','yaml','yml','xml','svg','html','htm','log','ini','toml','cfg','js','ts','css','sql']);
+  const cadExts = new Set(['step','stp','3mf','stl']);
   const imgExts = new Set(['png','jpg','jpeg','webp','gif','bmp']);
 
   for (const file of fileList) {
@@ -3585,6 +4199,7 @@ function addAiFiles(fileList) {
     const mime = (file.type || '').toLowerCase();
     const isSvg = ext === 'svg' || mime === 'image/svg+xml';
     const isPdf = ext === 'pdf' || mime === 'application/pdf';
+    const isCad = cadExts.has(ext);
     const isImage = !isSvg && ((mime.startsWith('image/') && mime !== 'image/svg+xml') || imgExts.has(ext));
 
     if (isImage) {
@@ -3628,15 +4243,15 @@ function addAiFiles(fileList) {
         img.src = dataUrl;
       };
       reader.readAsDataURL(file);
-    } else if (isPdf) {
+    } else if (isPdf || isCad) {
       const reader = new FileReader();
       reader.onload = ev => {
         const dataUrl = String(ev.target && ev.target.result || '');
         const b64 = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
         if (!b64) return;
         S.aiAttachments.push({
-          name, kind: 'pdf', mime: 'application/pdf', size: file.size, size_h: humanBytes(file.size),
-          b64, text: '', previewUrl: '',
+          name, kind: isPdf ? 'pdf' : 'cad', mime: isPdf ? 'application/pdf' : (mime || 'application/octet-stream'),
+          size: file.size, size_h: humanBytes(file.size), b64, text: '', previewUrl: '',
         });
         renderAiAttachments();
       };
@@ -3653,7 +4268,7 @@ function addAiFiles(fileList) {
       };
       reader.readAsText(file);
     } else {
-      log(`[Attach] Unsupported file type: ${name} (${mime || ext || 'binary'}). Try an image, PDF, or text/code document.`, 'err');
+      log(`[Attach] Unsupported file type: ${name} (${mime || ext || 'binary'}). Try an image, PDF, CAD (.step/.3mf/.stl), or text/code document.`, 'err');
     }
   }
 }
@@ -4353,14 +4968,42 @@ class BlenderStudioPage(_PagesBase):
 
             exec_res = blender_exec(res["code"], settings["server_host"], settings["server_port"], timeout=60.0)
             note_prefix = ""
-            if not exec_res["ok"] and exec_res.get("stderr"):
+            audit_data: dict[str, Any] | None = None
+            audit_issues: list[str] = []
+            if exec_res["ok"]:
+                aud_res = blender_exec(
+                    "import cad\n__file_data__ = cad.audit_geometry()\n",
+                    settings["server_host"], settings["server_port"], timeout=15.0,
+                )
+                if aud_res["ok"] and isinstance(aud_res.get("file_data"), dict):
+                    audit_data = aud_res["file_data"]
+                    objs = audit_data.get("objects") or []
+                    if not objs:
+                        audit_issues.append("No printable MESH objects were created in CAD_Printable_Parts.")
+                    for ob in objs:
+                        if ob.get("flags"):
+                            audit_issues.append(f"{ob['name']} ({', '.join(ob['flags'])})")
+                    if aud_res.get("stdout"):
+                        exec_res["stdout"] = (exec_res.get("stdout") or "") + "\n" + aud_res["stdout"].strip()
+
+            if (not exec_res["ok"] and exec_res.get("stderr")) or audit_issues:
                 try:
+                    err_diag = (
+                        f"Traceback:\n```\n{exec_res['stderr'][-2000:]}\n```"
+                        if not exec_res["ok"]
+                        else "3D-Print Geometry Audit FAILED:\n- "
+                        + "\n- ".join(audit_issues)
+                        + "\nRemember: NEVER rotate a cad.box around its own center expecting it to connect distant parts, "
+                        "and NEVER boolean-cut a rotated tray with an unrotated box. Use `cad.strut(start=..., end=..., flat_bottom=True)` "
+                        "and `cad.oriented_box(..., pocket_size=..., aperture_diameter=..., aim_at=...)`."
+                    )
                     repair_prompt = (
                         f"Original user request:\n{user_prompt}\n\n"
-                        f"The generated script failed inside Blender {scene.get('version', '5.2.0') if scene else '5.2.0'}:\n"
+                        f"The generated script had issues inside Blender {scene.get('version', '5.2.0') if scene else '5.2.0'}:\n"
                         f"```python\n{res['code']}\n```\n\n"
-                        f"Traceback:\n```\n{exec_res['stderr'][-2000:]}\n```\n\n"
-                        "Fix the error and return ONE complete, self-contained ```python``` block."
+                        f"{err_diag}\n\n"
+                        "Fix ALL issues so every printable object has `islands == 1` (single connected manifold body), "
+                        "`non_manifold == 0`, and `min_Z >= 0.0`, then return ONE complete, self-contained ```python``` block."
                     )
                     repaired = call_ai_agent(
                         prompt=repair_prompt,
@@ -4373,8 +5016,16 @@ class BlenderStudioPage(_PagesBase):
                     )
                     if repaired.get("code"):
                         res["code"] = repaired["code"]
-                        note_prefix = "(Auto-repaired after Blender error.) "
+                        reason = "geometry audit" if audit_issues else "Blender error"
+                        note_prefix = f"(Auto-repaired after {reason}.) "
                         exec_res = blender_exec(res["code"], settings["server_host"], settings["server_port"], timeout=60.0)
+                        if exec_res["ok"]:
+                            aud_res2 = blender_exec(
+                                "import cad\n__file_data__ = cad.audit_geometry()\n",
+                                settings["server_host"], settings["server_port"], timeout=15.0,
+                            )
+                            if aud_res2.get("stdout"):
+                                exec_res["stdout"] = (exec_res.get("stdout") or "") + "\n" + aud_res2["stdout"].strip()
                 except Exception:
                     pass
 
