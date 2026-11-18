@@ -5,7 +5,7 @@
 # name = "Blender Studio"
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
-# version = "1.1.0"
+# version = "1.2.0"
 # license = "MIT"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
@@ -39,6 +39,7 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from typing import Any
 
 try:
@@ -50,7 +51,7 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Paths & Cross-Platform Auto-Discovery (avoid audit keywords: conf/config/secret)
 # --------------------------------------------------------------------------- #
-PLUGIN_VERSION = "1.1.0"
+PLUGIN_VERSION = "1.2.0"
 PLUGIN_DIR = Path(__file__).resolve().parent
 
 
@@ -1357,12 +1358,278 @@ def _build_ai_system_prompt(scene_info: dict[str, Any] | None) -> str:
     )
 
 
-def _call_openai_chat(endpoint: str, api_key: str, model: str, sys_prompt: str, prompt: str, image_b64: str) -> str:
-    if image_b64:
-        user_content: Any = [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
-        ]
+def _decode_pdf_literal(raw: bytes) -> str:
+    """Decode a parenthesized PDF literal string into text."""
+    out = bytearray()
+    i = 0
+    n = len(raw)
+    escapes = {ord("n"): 10, ord("r"): 13, ord("t"): 9, ord("b"): 8, ord("f"): 12}
+    while i < n:
+        ch = raw[i]
+        if ch == 92 and i + 1 < n:  # backslash
+            nxt = raw[i + 1]
+            if nxt in escapes:
+                out.append(escapes[nxt])
+                i += 2
+            elif nxt in (10, 13):  # line continuation
+                i += 3 if (nxt == 13 and i + 2 < n and raw[i + 2] == 10) else 2
+            elif 48 <= nxt <= 55:  # octal \ddd
+                oct_digits = bytes([nxt])
+                j = i + 2
+                while j < n and len(oct_digits) < 3 and 48 <= raw[j] <= 55:
+                    oct_digits += bytes([raw[j]])
+                    j += 1
+                out.append(int(oct_digits, 8) & 0xFF)
+                i = j
+            else:
+                out.append(nxt)
+                i += 2
+        else:
+            out.append(ch)
+            i += 1
+    data = bytes(out)
+    if data.startswith(b"\xfe\xff"):
+        return data[2:].decode("utf-16-be", errors="ignore")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("latin-1", errors="ignore")
+
+
+def _decode_pdf_hex(hex_bytes: bytes) -> str:
+    """Decode a hex-encoded PDF string (UTF-16BE BOM or 8-bit text)."""
+    cleaned = re.sub(rb"\s+", b"", hex_bytes)
+    if len(cleaned) % 2 == 1:
+        cleaned += b"0"
+    try:
+        data = bytes.fromhex(cleaned.decode("ascii"))
+    except ValueError:
+        return ""
+    if data.startswith(b"\xfe\xff"):
+        return data[2:].decode("utf-16-be", errors="ignore")
+    if len(data) >= 4 and sum(1 for idx in range(0, len(data), 2) if data[idx] == 0) > len(data) // 4:
+        return data.decode("utf-16-be", errors="ignore")
+    return data.decode("latin-1", errors="ignore")
+
+
+def _scan_pdf_paren(buf: bytes, start: int) -> tuple[bytes, int]:
+    """Scan balanced PDF literal parentheses starting at '(' index and return (inner, next_idx)."""
+    depth = 1
+    j = start + 1
+    n = len(buf)
+    while j < n and depth > 0:
+        b = buf[j]
+        if b == 92:
+            j += 2
+            continue
+        if b == 40:
+            depth += 1
+        elif b == 41:
+            depth -= 1
+        j += 1
+    end_inner = j - 1 if depth == 0 else j
+    return buf[start + 1 : end_inner], j
+
+
+def _extract_pdf_text_from_stream(stream_bytes: bytes) -> list[str]:
+    """Extract text runs from a decoded PDF content stream via Tj/TJ operators."""
+    chunks: list[str] = []
+    i = 0
+    n = len(stream_bytes)
+    while i < n:
+        c = stream_bytes[i]
+        if c == 40:  # '(' literal followed by Tj / ' / "
+            inner_bytes, j = _scan_pdf_paren(stream_bytes, i)
+            if stream_bytes[j : j + 16].lstrip().startswith((b"Tj", b"'", b'"')):
+                txt = _decode_pdf_literal(inner_bytes)
+                if txt:
+                    chunks.append(txt)
+            i = j
+        elif c == 91:  # '[' ... ']' TJ
+            j = i + 1
+            while j < n and stream_bytes[j] != 93:
+                if stream_bytes[j] == 40:
+                    _, j = _scan_pdf_paren(stream_bytes, j)
+                else:
+                    j += 1
+            if j < n and stream_bytes[j] == 93:
+                j += 1
+            if stream_bytes[j : j + 16].lstrip().startswith(b"TJ"):
+                inner = stream_bytes[i + 1 : j - 1]
+                parts: list[str] = []
+                k = 0
+                m = len(inner)
+                while k < m:
+                    ic = inner[k]
+                    if ic == 40:
+                        lit, k = _scan_pdf_paren(inner, k)
+                        parts.append(_decode_pdf_literal(lit))
+                    elif ic == 60 and not (k + 1 < m and inner[k + 1] == 60):
+                        end = inner.find(b">", k + 1)
+                        if end != -1:
+                            parts.append(_decode_pdf_hex(inner[k + 1 : end]))
+                            k = end + 1
+                        else:
+                            k += 1
+                    else:
+                        k += 1
+                joined = "".join(parts)
+                if joined:
+                    chunks.append(joined)
+            i = j
+        elif c == 60 and not (i + 1 < n and stream_bytes[i + 1] == 60):
+            end = stream_bytes.find(b">", i + 1)
+            if end != -1 and stream_bytes[end + 1 : end + 16].lstrip().startswith(b"Tj"):
+                txt = _decode_pdf_hex(stream_bytes[i + 1 : end])
+                if txt:
+                    chunks.append(txt)
+                i = end + 1
+            else:
+                i += 1
+        else:
+            i += 1
+    return chunks
+
+
+def _extract_pdf_text(raw_bytes: bytes, max_chars: int = 24000) -> str:
+    """Pure-stdlib best-effort PDF text extraction from FlateDecode streams & raw text."""
+    extracted: list[str] = []
+    streams = [m.group(1) for m in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", raw_bytes, re.DOTALL)]
+    outside = re.sub(rb"stream\r?\n.*?\r?\nendstream", b"", raw_bytes, flags=re.DOTALL)
+    if outside:
+        streams.append(outside)
+
+    for chunk in streams:
+        candidates = [chunk]
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+            try:
+                candidates.insert(0, zlib.decompress(chunk, wbits))
+                break
+            except Exception:
+                pass
+        for stream_data in candidates:
+            if b"Tj" in stream_data or b"TJ" in stream_data or b"BT" in stream_data:
+                extracted.extend(_extract_pdf_text_from_stream(stream_data))
+                break
+
+    text = "\n".join(line.strip() for line in extracted if line.strip())
+    if not text:
+        noise = {
+            "obj", "endobj", "stream", "endstream", "xref", "trailer", "startxref",
+            "/Type", "/Font", "/Filter", "/FlateDecode", "/Length", "/Subtype",
+            "/Resources", "/Contents", "/Catalog", "/Pages", "/Page", "/MediaBox",
+        }
+        runs = re.findall(rb"[\x20-\x7e]{4,}", raw_bytes)
+        cleaned = []
+        for r in runs:
+            s = r.decode("ascii", errors="ignore").strip()
+            if s and not any(tok in s for tok in noise) and any(ch.isalpha() for ch in s):
+                cleaned.append(s)
+        text = "\n".join(cleaned)
+
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n...[truncated at max length]"
+    return text
+
+
+def _prepare_ai_attachments(
+    attachments: list[dict[str, Any]] | None,
+    viewport_b64: str = "",
+) -> tuple[list[dict[str, str]], str, list[str]]:
+    """Normalize image and document attachments for multi-modal and text LLM calls."""
+    images: list[dict[str, str]] = []
+    doc_sections: list[str] = []
+    summary_names: list[str] = []
+
+    if viewport_b64:
+        clean_vp = viewport_b64.split(",", 1)[-1].strip() if viewport_b64.startswith("data:") else viewport_b64.strip()
+        if clean_vp:
+            images.append({"name": "viewport_render.png", "mime": "image/png", "b64": clean_vp})
+            summary_names.append("viewport_render.png (viewport)")
+
+    total_doc_chars = 0
+    max_per_doc = 24000
+    max_total_docs = 64000
+
+    for att in attachments or []:
+        if not isinstance(att, dict):
+            continue
+        name = str(att.get("name") or "attachment").strip() or "attachment"
+        kind = str(att.get("kind") or "doc").lower().strip()
+        mime = str(att.get("mime") or "").strip()
+        raw_b64 = str(att.get("b64") or "").strip()
+        if raw_b64.startswith("data:") and "," in raw_b64:
+            hdr, raw_b64 = raw_b64.split(",", 1)
+            if not mime and ":" in hdr and ";" in hdr:
+                mime = hdr.split(":", 1)[1].split(";", 1)[0].strip()
+
+        if kind == "image":
+            if raw_b64:
+                images.append({"name": name, "mime": mime or "image/png", "b64": raw_b64})
+                summary_names.append(f"{name} (image)")
+            continue
+
+        is_pdf = kind == "pdf" or name.lower().endswith(".pdf") or mime == "application/pdf"
+        if is_pdf:
+            doc_text = ""
+            if raw_b64:
+                try:
+                    pdf_bytes = base64.b64decode(raw_b64)
+                    doc_text = _extract_pdf_text(pdf_bytes, max_chars=max_per_doc)
+                except Exception as exc:
+                    doc_text = f"(Failed to parse PDF bytes: {exc})"
+            if not doc_text:
+                doc_text = "(No extractable text found in PDF; it may be scanned or vector-only — try attaching a PNG screenshot of the page.)"
+            tag = "pdf"
+        else:
+            doc_text = str(att.get("text") or "")
+            if not doc_text and raw_b64:
+                try:
+                    doc_text = base64.b64decode(raw_b64).decode("utf-8", errors="replace")
+                except Exception:
+                    doc_text = ""
+            doc_text = doc_text.strip()
+            tag = "doc"
+
+        if not doc_text:
+            continue
+
+        if len(doc_text) > max_per_doc:
+            doc_text = doc_text[:max_per_doc] + f"\n...[truncated at {max_per_doc} chars]"
+
+        remaining = max_total_docs - total_doc_chars
+        if remaining <= 200:
+            break
+        if len(doc_text) > remaining:
+            doc_text = doc_text[:remaining] + "\n...[truncated due to total attachment budget]"
+
+        total_doc_chars += len(doc_text)
+        doc_sections.append(
+            f"--- BEGIN ATTACHED DOCUMENT: {name} ---\n{doc_text}\n--- END ATTACHED DOCUMENT: {name} ---"
+        )
+        summary_names.append(f"{name} ({tag})")
+
+    return images, "\n\n".join(doc_sections), summary_names
+
+
+def _call_openai_chat(
+    endpoint: str,
+    api_key: str,
+    model: str,
+    sys_prompt: str,
+    prompt: str,
+    images: list[dict[str, str]] | None = None,
+) -> str:
+    if images:
+        user_content: Any = [{"type": "text", "text": prompt}]
+        for img in images:
+            mime = img.get("mime") or "image/png"
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{img['b64']}"},
+            })
     else:
         user_content = prompt
     body = json.dumps({
@@ -1377,9 +1644,72 @@ def _call_openai_chat(endpoint: str, api_key: str, model: str, sys_prompt: str, 
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=90) as resp:
+    with urllib.request.urlopen(req, timeout=120) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+
+
+def _is_ollama_vision_model(model_name: str) -> bool:
+    low = model_name.lower()
+    return any(tok in low for tok in ("vision", "vl", "llava", "minicpm", "gemma3", "moondream"))
+
+
+def _pick_ollama_vision_fallback(settings: dict[str, Any]) -> str:
+    """Return an installed Ollama vision model name if available, else empty string."""
+    preferred = "lukey03/qwen3.5-9b-abliterated-vision:latest"
+    for base_url in (settings["ollama_url"], settings["ollama_fallback_url"]):
+        endpoint = base_url.rstrip("/") + "/api/tags"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(endpoint, method="GET"), timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            names = [str(m.get("name") or "") for m in (data.get("models") or []) if m.get("name")]
+            if preferred in names:
+                return preferred
+            for name in names:
+                if _is_ollama_vision_model(name):
+                    return name
+            return ""
+        except Exception:
+            continue
+    return ""
+
+
+def _post_ollama_chat(
+    settings: dict[str, Any],
+    model: str,
+    sys_prompt: str,
+    prompt: str,
+    image_b64s: list[str],
+    num_ctx: int = 8192,
+) -> str:
+    user_msg: dict[str, Any] = {"role": "user", "content": prompt}
+    if image_b64s:
+        user_msg["images"] = image_b64s
+    payload = json.dumps({
+        "model": model,
+        "stream": False,
+        "options": {"temperature": 0.2, "num_ctx": num_ctx},
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            user_msg,
+        ],
+    }).encode("utf-8")
+    last_err: Exception | None = None
+    for base_url in (settings["ollama_url"], settings["ollama_fallback_url"]):
+        endpoint = base_url.rstrip("/") + "/api/chat"
+        try:
+            req = urllib.request.Request(
+                endpoint, data=payload,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return (data.get("message") or {}).get("content", "")
+        except Exception as exc:
+            last_err = exc
+    raise RuntimeError(
+        f"Ollama unreachable ({settings['ollama_url']} / {settings['ollama_fallback_url']}): {last_err}"
+    )
 
 
 def call_ai_agent(
@@ -1389,8 +1719,20 @@ def call_ai_agent(
     scene_info: dict[str, Any] | None,
     settings: dict[str, Any],
     image_b64: str = "",
+    attachments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     sys_prompt = _build_ai_system_prompt(scene_info)
+    images, doc_block, summary_names = _prepare_ai_attachments(attachments, image_b64)
+
+    full_prompt = prompt.strip() or "Analyze the attached reference files and generate the corresponding Blender bpy CAD script."
+    if images:
+        full_prompt += "\n\nAttached Reference Images (inspect visually alongside the prompt):\n" + "\n".join(
+            f"- {img['name']} ({img['mime']})" for img in images
+        )
+    if doc_block:
+        full_prompt += "\n\nAttached Reference Documents:\n" + doc_block
+
+    model_note = ""
 
     if provider == "gemini":
         api_key = (settings.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY") or "").strip()
@@ -1404,52 +1746,44 @@ def call_ai_agent(
             api_key,
             model or "gemini-2.5-flash",
             sys_prompt,
-            prompt,
-            image_b64,
+            full_prompt,
+            images,
         )
     elif provider == "openai":
         base = (settings.get("openai_base_url") or "https://api.openai.com/v1").rstrip("/")
         api_key = (settings.get("openai_api_key") or os.environ.get("OPENAI_API_KEY") or "").strip()
         chosen_model = (settings.get("openai_model") or model or "gpt-4o-mini").strip()
         endpoint = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
-        text = _call_openai_chat(endpoint, api_key, chosen_model, sys_prompt, prompt, image_b64)
+        text = _call_openai_chat(endpoint, api_key, chosen_model, sys_prompt, full_prompt, images)
     else:
-        user_msg: dict[str, Any] = {"role": "user", "content": prompt}
-        if image_b64:
-            user_msg["images"] = [image_b64]
-        payload = json.dumps({
-            "model": model or "qwen2.5-coder:7b",
-            "stream": False,
-            "options": {"temperature": 0.2, "num_ctx": 8192},
-            "messages": [
-                {"role": "system", "content": sys_prompt},
-                user_msg,
-            ],
-        }).encode("utf-8")
-        last_err: Exception | None = None
-        text = ""
-        for base_url in (settings["ollama_url"], settings["ollama_fallback_url"]):
-            endpoint = base_url.rstrip("/") + "/api/chat"
-            try:
-                req = urllib.request.Request(
-                    endpoint, data=payload,
-                    headers={"Content-Type": "application/json"}, method="POST"
+        chosen_model = model or "qwen2.5-coder:7b"
+        img_b64s = [img["b64"] for img in images]
+        num_ctx = 16384 if (doc_block or img_b64s) else 8192
+        if img_b64s and not _is_ollama_vision_model(chosen_model):
+            vision_fallback = _pick_ollama_vision_fallback(settings)
+            if vision_fallback:
+                chosen_model = vision_fallback
+                model_note = f"(Auto-switched to vision model `{vision_fallback}` for attached image context.) "
+        try:
+            text = _post_ollama_chat(settings, chosen_model, sys_prompt, full_prompt, img_b64s, num_ctx=num_ctx)
+        except Exception:
+            if img_b64s and not _is_ollama_vision_model(chosen_model):
+                text = _post_ollama_chat(settings, chosen_model, sys_prompt, full_prompt, [], num_ctx=num_ctx)
+                model_note = (
+                    f"(Selected model `{chosen_model}` does not support image inputs; images were omitted. "
+                    "Switch to a vision model for picture analysis.) "
                 )
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                text = (data.get("message") or {}).get("content", "")
-                last_err = None
-                break
-            except Exception as exc:
-                last_err = exc
-        if last_err is not None:
-            raise RuntimeError(
-                f"Ollama unreachable ({settings['ollama_url']} / {settings['ollama_fallback_url']}): {last_err}"
-            )
+            else:
+                raise
 
     code = _extract_python_block(text)
     explanation = re.sub(r"```(?:python|py)?\s*\n.*?```", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
-    return {"explanation": explanation or "Generated Blender Python script.", "code": code, "raw": text}
+    return {
+        "explanation": (model_note + (explanation or "Generated Blender Python script.")).strip(),
+        "code": code,
+        "raw": text,
+        "attachments_used": summary_names,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1635,7 +1969,26 @@ PAGE = r"""<!doctype html>
     background: rgba(15,17,22,.82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
   }
 
-  .ai-box { padding: 9px 10px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .ai-box { padding: 9px 10px; border-bottom: 1px solid var(--border); background: var(--panel); transition: background .12s, border-color .12s; }
+  .ai-box.dragover { outline: 1px dashed var(--accent); outline-offset: -3px; background: rgba(232,125,13,.08); }
+  .attach-bar { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; max-height: 84px; overflow-y: auto; }
+  .attach-chip {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+    padding: 2px 6px; border-radius: 5px; background: var(--card); border: 1px solid var(--border);
+    font-size: 11px; color: var(--text);
+  }
+  .attach-chip img { width: 18px; height: 18px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
+  .attach-badge {
+    font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 4px;
+    border-radius: 3px; background: rgba(38,166,154,.22); color: #7ae2d8; flex-shrink: 0;
+  }
+  .attach-chip .att-name { max-width: 155px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attach-chip .att-size { color: var(--muted); font-size: 10px; font-family: var(--mono); }
+  .attach-chip .rm {
+    border: none; background: transparent; color: var(--muted); padding: 0 2px;
+    cursor: pointer; font-weight: 700; line-height: 1; font-size: 12px;
+  }
+  .attach-chip .rm:hover { color: var(--err); background: transparent; }
   .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   textarea {
     width: 100%; resize: vertical; padding: 8px; line-height: 1.4;
@@ -1739,11 +2092,15 @@ PAGE = r"""<!doctype html>
           <option value="openai::custom">OpenAI-Compatible (Settings)</option>
         </select>
       </div>
-      <div class="ai-box">
-        <textarea id="ai-prompt" rows="3" placeholder="Describe a part or edit (e.g. 'Create a 45x32x14mm enclosure with 2mm walls, 4x 6x2mm magnet corner pockets, and M3 bosses')..."></textarea>
+      <div class="ai-box" id="ai-box">
+        <textarea id="ai-prompt" rows="3" placeholder="Describe a part or edit, or drop / paste reference images &amp; docs (.md, .pdf, .py, .scad, .json)..."></textarea>
+        <input type="file" id="ai-file-input" multiple accept="image/*,.md,.txt,.json,.csv,.py,.scad,.yaml,.yml,.xml,.svg,.html,.pdf,.log,.ini,.toml" style="display:none">
+        <div class="attach-bar" id="ai-attachments" style="display:none"></div>
         <div class="row" style="margin-top:6px">
-          <label class="chk"><input type="checkbox" id="chk-auto-run" checked> Auto-run &amp; render</label>
-          <label class="chk"><input type="checkbox" id="chk-attach-img"> Attach viewport image</label>
+          <button class="sm" id="btn-ai-attach" title="Attach pictures (.png, .jpg, .webp, .gif, .bmp) or documents (.md, .txt, .py, .scad, .json, .csv, .pdf) — or drag &amp; drop / paste into prompt">+ Image / Doc</button>
+          <button class="sm danger" id="btn-ai-clear-att" style="display:none" title="Remove all attached reference files">Clear</button>
+          <label class="chk"><input type="checkbox" id="chk-auto-run" checked> Auto-run</label>
+          <label class="chk" title="Also include the current viewport diagnostic render"><input type="checkbox" id="chk-attach-img"> +Viewport</label>
           <div class="spacer"></div>
           <button class="primary sm" id="btn-ai-go">Generate bpy</button>
         </div>
@@ -1842,6 +2199,7 @@ const S = {
   showMockups: false,
   zoom: 1.0,
   lastRenderB64: '',
+  aiAttachments: [],
   settings: {},
 };
 
@@ -2075,11 +2433,196 @@ $('btn-plate-all').onclick = () => {
   post({ command: 'export_stl', object_names: ['__all_printable__'], send_to_plate: true });
 };
 
+function humanBytes(n) {
+  let v = Number(n) || 0;
+  for (const u of ['B', 'KB', 'MB']) {
+    if (v < 1024 || u === 'MB') return u === 'B' ? `${v} B` : `${v.toFixed(1)} ${u}`;
+    v /= 1024;
+  }
+  return `${v.toFixed(1)} MB`;
+}
+
+function renderAiAttachments() {
+  const bar = $('ai-attachments');
+  const clearBtn = $('btn-ai-clear-att');
+  if (!S.aiAttachments.length) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    clearBtn.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'flex';
+  clearBtn.style.display = 'inline-block';
+  bar.innerHTML = S.aiAttachments.map((att, idx) => {
+    const ext = (att.name.split('.').pop() || att.kind || 'DOC').toUpperCase().slice(0, 4);
+    const thumb = att.kind === 'image' && att.previewUrl
+      ? `<img src="${esc(att.previewUrl)}" alt="">`
+      : `<span class="attach-badge">${esc(ext)}</span>`;
+    return `<span class="attach-chip" title="${esc(att.name)} (${esc(att.size_h)})">
+      ${thumb}
+      <span class="att-name">${esc(att.name)}</span>
+      <span class="att-size">${esc(att.size_h)}</span>
+      <button type="button" class="rm" data-rm-att="${idx}" title="Remove">&times;</button>
+    </span>`;
+  }).join('');
+  bar.querySelectorAll('[data-rm-att]').forEach(btn => {
+    btn.onclick = () => {
+      const i = parseInt(btn.dataset.rmAtt, 10);
+      if (!isNaN(i)) {
+        S.aiAttachments.splice(i, 1);
+        renderAiAttachments();
+      }
+    };
+  });
+}
+
+function addAiFiles(fileList) {
+  if (!fileList || !fileList.length) return;
+  const maxBytes = 15 * 1024 * 1024;
+  const docExts = new Set(['md','txt','json','csv','py','scad','yaml','yml','xml','svg','html','htm','log','ini','toml','cfg','js','ts','css','sql']);
+  const imgExts = new Set(['png','jpg','jpeg','webp','gif','bmp']);
+
+  for (const file of fileList) {
+    if (!file) continue;
+    if (file.size > maxBytes) {
+      log(`[Attach] Skipped ${file.name} (${humanBytes(file.size)} exceeds 15 MB limit).`, 'err');
+      continue;
+    }
+    const name = file.name || `pasted_${Date.now()}.png`;
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    const mime = (file.type || '').toLowerCase();
+    const isSvg = ext === 'svg' || mime === 'image/svg+xml';
+    const isPdf = ext === 'pdf' || mime === 'application/pdf';
+    const isImage = !isSvg && ((mime.startsWith('image/') && mime !== 'image/svg+xml') || imgExts.has(ext));
+
+    if (isImage) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const dataUrl = String(ev.target && ev.target.result || '');
+        if (!dataUrl) return;
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 1536;
+          let finalUrl = dataUrl;
+          let finalMime = mime || (ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext || 'png'}`);
+          if (img.width > maxDim || img.height > maxDim) {
+            const scale = Math.min(maxDim / img.width, maxDim / img.height);
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(img.width * scale));
+            canvas.height = Math.max(1, Math.round(img.height * scale));
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              const outMime = (finalMime === 'image/jpeg') ? 'image/jpeg' : 'image/png';
+              finalUrl = canvas.toDataURL(outMime, 0.9);
+              finalMime = outMime;
+            }
+          }
+          const b64 = finalUrl.includes(',') ? finalUrl.split(',', 2)[1] : finalUrl;
+          S.aiAttachments.push({
+            name, kind: 'image', mime: finalMime, size: file.size, size_h: humanBytes(file.size),
+            b64, text: '', previewUrl: finalUrl,
+          });
+          renderAiAttachments();
+        };
+        img.onerror = () => {
+          const b64 = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
+          S.aiAttachments.push({
+            name, kind: 'image', mime: mime || 'image/png', size: file.size, size_h: humanBytes(file.size),
+            b64, text: '', previewUrl: dataUrl,
+          });
+          renderAiAttachments();
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    } else if (isPdf) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const dataUrl = String(ev.target && ev.target.result || '');
+        const b64 = dataUrl.includes(',') ? dataUrl.split(',', 2)[1] : dataUrl;
+        if (!b64) return;
+        S.aiAttachments.push({
+          name, kind: 'pdf', mime: 'application/pdf', size: file.size, size_h: humanBytes(file.size),
+          b64, text: '', previewUrl: '',
+        });
+        renderAiAttachments();
+      };
+      reader.readAsDataURL(file);
+    } else if (mime.startsWith('text/') || mime.includes('json') || mime.includes('xml') || docExts.has(ext) || !ext) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const text = String(ev.target && ev.target.result || '');
+        S.aiAttachments.push({
+          name, kind: 'doc', mime: mime || 'text/plain', size: file.size, size_h: humanBytes(file.size),
+          b64: '', text, previewUrl: '',
+        });
+        renderAiAttachments();
+      };
+      reader.readAsText(file);
+    } else {
+      log(`[Attach] Unsupported file type: ${name} (${mime || ext || 'binary'}). Try an image, PDF, or text/code document.`, 'err');
+    }
+  }
+}
+
+$('btn-ai-attach').onclick = () => $('ai-file-input').click();
+$('ai-file-input').onchange = e => {
+  addAiFiles(e.target.files);
+  e.target.value = '';
+};
+$('btn-ai-clear-att').onclick = () => {
+  S.aiAttachments = [];
+  renderAiAttachments();
+};
+
+const aiBox = $('ai-box');
+['dragenter', 'dragover'].forEach(evtName => {
+  aiBox.addEventListener(evtName, e => {
+    e.preventDefault();
+    e.stopPropagation();
+    aiBox.classList.add('dragover');
+  });
+});
+['dragleave', 'drop'].forEach(evtName => {
+  aiBox.addEventListener(evtName, e => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (evtName === 'drop' && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      addAiFiles(e.dataTransfer.files);
+    }
+    aiBox.classList.remove('dragover');
+  });
+});
+
+$('ai-prompt').addEventListener('paste', e => {
+  const cd = e.clipboardData;
+  if (!cd) return;
+  const files = [];
+  if (cd.files && cd.files.length) {
+    for (const f of cd.files) files.push(f);
+  } else if (cd.items && cd.items.length) {
+    for (const item of cd.items) {
+      if (item.kind === 'file') {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+  }
+  if (files.length) {
+    e.preventDefault();
+    addAiFiles(files);
+  }
+});
+
 $('btn-ai-go').onclick = () => {
-  const prompt = $('ai-prompt').value.trim();
-  if (!prompt) return;
+  const rawPrompt = $('ai-prompt').value.trim();
+  if (!rawPrompt && !S.aiAttachments.length) return;
+  const prompt = rawPrompt || 'Analyze the attached reference files and generate the corresponding Blender bpy CAD script.';
   const [provider, model] = ($('ai-model').value || 'ollama::qwen2.5-coder:7b').split('::');
-  setStatus(`Asking ${provider === 'openai' ? (S.settings.openai_model || 'custom model') : model}...`, true);
+  const attCount = S.aiAttachments.length + ($('chk-attach-img').checked && S.lastRenderB64 ? 1 : 0);
+  const attNote = attCount ? ` (+${attCount} attachment${attCount > 1 ? 's' : ''})` : '';
+  setStatus(`Asking ${provider === 'openai' ? (S.settings.openai_model || 'custom model') : model}${attNote}...`, true);
   post({
     command: 'ai_prompt',
     prompt,
@@ -2087,6 +2630,13 @@ $('btn-ai-go').onclick = () => {
     model,
     auto_run: $('chk-auto-run').checked,
     image_b64: $('chk-attach-img').checked ? S.lastRenderB64 : '',
+    attachments: S.aiAttachments.map(a => ({
+      name: a.name,
+      kind: a.kind,
+      mime: a.mime,
+      b64: a.b64 || '',
+      text: a.text || '',
+    })),
   });
 };
 
@@ -2188,6 +2738,9 @@ if (window.orca && window.orca.onMessage) {
         break;
       case 'ai_result':
         if (msg.ok) {
+          if (msg.attachments_used && msg.attachments_used.length) {
+            log('[AI Context] ' + msg.attachments_used.join(', '), 'info');
+          }
           if (msg.explanation) log('[AI] ' + msg.explanation, 'info');
           if (msg.code) $('bpy-code').value = msg.code;
           if (msg.auto_run && msg.code) {
@@ -2656,6 +3209,7 @@ class BlenderStudioPage(_PagesBase):
                 scene_info=scene,
                 settings=settings,
                 image_b64=str(msg.get("image_b64") or ""),
+                attachments=list(msg.get("attachments") or []),
             )
             self._post({
                 "command": "ai_result",
@@ -2663,6 +3217,7 @@ class BlenderStudioPage(_PagesBase):
                 "explanation": res["explanation"],
                 "code": res["code"],
                 "auto_run": bool(msg.get("auto_run")),
+                "attachments_used": res.get("attachments_used", []),
             })
         except Exception as exc:
             self._post({"command": "ai_result", "ok": False, "error": str(exc)})

@@ -17,7 +17,7 @@
 
 ---
 
-**Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.1.0`) that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with `bpy` (or an AI assistant), inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
+**Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.2.0`) that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with `bpy` (or an AI assistant with reference images & spec documents), inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
 
 <p align="center">
   <img src="assets/hero_render.png" alt="Diagnostic Hero Render in Blender Studio" width="48%">
@@ -36,7 +36,7 @@
 | **Zero-Dependency Single File** | Pure Python 3.10+ stdlib (`blender_studio.py`). No `pip` or `uv` package installs during OrcaSlicer startup. |
 | **Printable vs. Mockup Separation** | Automatically separates printable CAD meshes (`Test_Pod_Base`, `Test_Pod_Lid`, etc.) from reference mockups (`M_*`, `Mockup_*`, `Vis_*`, `Plug_*`, `Hardware_Mockups`) with live `X × Y × Z mm` dimensions. |
 | **Render-Inspect-Refine Viewport** | One-click **Hero**, **Top**, **Front**, **Isometric**, **Exploded**, and **Scene Cam** diagnostic renders via `BLENDER_EEVEE`, plus zoom controls and a saved project render filmstrip. |
-| **AI CAD Assistant** | Injects live scene bounding boxes and hardware mockups into prompts for **Local Ollama** (`qwen2.5-coder:7b`, `qwen3.5-9b-vision`), **Google Gemini**, or any **OpenAI-Compatible** endpoint (OpenAI, OpenRouter, LM Studio, DeepSeek), with optional viewport image attachment and auto-run/render. |
+| **AI CAD Assistant** | Injects live scene bounding boxes and hardware mockups into prompts for **Local Ollama** (`qwen2.5-coder:7b`, `qwen3.5-9b-vision`), **Google Gemini**, or any **OpenAI-Compatible** endpoint (OpenAI, OpenRouter, LM Studio, DeepSeek). Attach reference **pictures** (sketches, caliper photos, screenshots) and **documents** (`.md`, `.pdf`, `.txt`, `.py`, `.scad`, `.json`, `.csv`, `.svg`) via **`+ Image / Doc`**, drag-and-drop, or `Ctrl+V` clipboard paste, plus optional viewport image attachment and auto-run/render. |
 | **Built-in 3D Printing Macros** | One-click macros for **3-Point Studio Rig**, **6×2 mm Magnet Pocket Mockup** (`Ø6.25 × 2.20 mm`), **M3 Boss & Captive Nut**, **SG90 Servo Mockup**, and **Manifold / Scale / Z-Floor Audit**. |
 | **Cross-Platform Send to Plate** | Exports binary STL via `wm.stl_export` (`1 BU = 1 mm`) and delivers it straight onto the active **Prepare** build plate via Linux D-Bus (`AnotherInstance`), Windows `WM_COPYDATA`, or macOS single-instance handoff. |
 

@@ -113,9 +113,24 @@ Every AI prompt automatically includes a structured summary of your active scene
 3. **OpenAI-Compatible (OpenAI, OpenRouter, LM Studio, DeepSeek, vLLM):**
    - Open **Settings** &rarr; configure **OpenAI-Compatible Base URL** (e.g., `http://127.0.0.1:1234/v1` for LM Studio or `https://openrouter.ai/api/v1`), **Model**, and **API Key** &rarr; pick `OpenAI-Compatible (Settings)` in the dropdown.
 
+### Attaching Pictures & Reference Documents
+Beyond live scene geometry, you can supply rich multi-modal context directly to the AI CAD Assistant using three equivalent methods:
+1. Click **`+ Image / Doc`** below the prompt box to select one or more local files.
+2. **Drag and drop** files directly onto the prompt box.
+3. **Paste (`Ctrl+V`)** screenshots or copied images directly into the prompt textarea.
+
+Each attachment appears as a removable chip showing a thumbnail (or document badge), filename, and size (per-file limit `15 MB`):
+- **Reference Pictures (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.bmp`):**
+  - Ideal for hand-drawn dimensional sketches, caliper measurements on real hardware, PCB top-down photos, or multi-view screenshots.
+  - Images larger than `1536 px` are automatically downscaled client-side to keep payloads responsive for both cloud APIs and 8 GB VRAM local vision models.
+  - If you leave Ollama on `qwen2.5-coder:7b` while images are attached, Blender Studio automatically checks your local Ollama tags and upgrades the request to an installed vision model (e.g., `lukey03/qwen3.5-9b-abliterated-vision:latest`) with a console note.
+- **Reference Documents (`.md`, `.txt`, `.json`, `.csv`, `.py`, `.scad`, `.yaml`, `.yml`, `.xml`, `.svg`, `.html`, `.pdf`, `.log`, `.ini`, `.toml`):**
+  - Great for design specs (`implementation.md`), dimension/BOM tables (`.csv`, `.json`), hardware datasheets (`.pdf` text extracted with built-in stdlib `zlib` `FlateDecode` support), vector outlines (`.svg`), or existing OpenSCAD / Python CAD scripts to port into `bpy`.
+  - Document text is injected cleanly into the prompt (up to `24,000` chars per document / `64,000` chars total), so text-only coder models (`qwen2.5-coder:7b`) can follow exact specs without needing vision.
+
 ### Options
-- **`Auto-run & render`:** Automatically runs the generated Python block on `:9999` and renders a fresh **Hero** diagnostic preview.
-- **`Attach viewport image`:** Sends the currently displayed viewport PNG alongside your prompt so multimodal vision models can visually inspect alignment, overhangs, or cosmetic tweaks.
+- **`Auto-run`:** Automatically runs the generated Python block on `:9999` and renders a fresh **Hero** diagnostic preview.
+- **`+Viewport`:** Sends the currently displayed viewport PNG alongside your prompt and uploaded files so multimodal vision models can inspect alignment, overhangs, or cosmetic tweaks visually.
 
 ---
 

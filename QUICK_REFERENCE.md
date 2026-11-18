@@ -92,7 +92,23 @@ bpy.data.objects.remove(cutter, do_unlink=True)
 
 ---
 
-## 7. TCP `:9999` Wire Protocol (External Tools & Agents)
+## 7. Multi-Modal Context Attachments (Pictures & Documents)
+
+You can feed visual references and technical specs directly into the **AI CAD Assistant**:
+
+| Input Method | Supported Formats & Behavior |
+| :--- | :--- |
+| **`+ Image / Doc` button** | Opens multi-file picker for pictures and documents; attached chips appear beneath the prompt box with thumbnail/badge and `×` remove buttons. |
+| **Drag & Drop** | Drag one or more files directly onto the **AI CAD Assistant** prompt area. |
+| **Clipboard Paste (`Ctrl+V`)** | Paste screenshots or copied images directly into the prompt textarea. |
+| **`+Viewport` checkbox** | Includes the active EEVEE diagnostic render shown in the viewport alongside your prompt and uploaded files. |
+
+- **Pictures (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.bmp`):** Sent as multi-modal image inputs (auto-downscaled above `1536 px` so local GPU vision models stay fast). If Ollama is set to a text-only coder model like `qwen2.5-coder:7b`, Blender Studio automatically switches to an installed local vision model (such as `lukey03/qwen3.5-9b-abliterated-vision:latest`) when images are attached.
+- **Documents (`.md`, `.txt`, `.json`, `.csv`, `.py`, `.scad`, `.yaml`, `.yml`, `.xml`, `.svg`, `.html`, `.pdf`, `.log`, `.ini`, `.toml`):** Parsed client-side (plus pure-stdlib `FlateDecode` PDF text extraction on the backend, up to `24k chars/doc`, `64k chars` total) and injected cleanly as reference context so **both** text coder models and multimodal models can read specs, pinouts, BOMs, and existing CAD code.
+
+---
+
+## 8. TCP `:9999` Wire Protocol (External Tools & Agents)
 
 Every packet uses a **4-byte big-endian unsigned integer length header** followed by UTF-8 payload:
 
