@@ -5,7 +5,7 @@
 # name = "Blender Studio"
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
-# version = "1.2.0"
+# version = "1.2.1"
 # license = "MIT"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
@@ -51,7 +51,7 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Paths & Cross-Platform Auto-Discovery (avoid audit keywords: conf/config/secret)
 # --------------------------------------------------------------------------- #
-PLUGIN_VERSION = "1.2.0"
+PLUGIN_VERSION = "1.2.1"
 PLUGIN_DIR = Path(__file__).resolve().parent
 
 
@@ -174,6 +174,7 @@ import json
 import math
 import os
 import queue
+import re
 import socket
 import sys
 import threading
@@ -187,6 +188,7 @@ result_queue = queue.Queue()
 server_running = True
 server_thread = None
 timer_registered = False
+_shims_installed = False
 
 try:
     import bpy
@@ -202,19 +204,158 @@ except ImportError:
     mathutils = None
 
 
+class _OpsSubProxy:
+    """Transparent proxy overriding selected Blender operators with safe wrappers."""
+
+    def __init__(self, target, overrides):
+        self._target = target
+        self._overrides = overrides
+
+    def __getattr__(self, name):
+        if name in self._overrides:
+            return self._overrides[name]
+        return getattr(self._target, name)
+
+
+def _install_bpy_shims():
+    """Install lightweight Blender 4.x/5.x compatibility shims for AI/legacy bpy scripts."""
+    global _shims_installed
+    if _shims_installed or bpy is None:
+        return
+    _shims_installed = True
+
+    if not hasattr(bpy.types.Mesh, "use_auto_smooth"):
+        try:
+            bpy.types.Mesh.use_auto_smooth = property(lambda self: True, lambda self, v: None)
+            bpy.types.Mesh.auto_smooth_angle = property(lambda self: 0.523599, lambda self, v: None)
+        except Exception:
+            pass
+
+    orig_ops = bpy.ops
+    orig_mesh = orig_ops.mesh
+    orig_wm = orig_ops.wm
+
+    def _safe_cube_add(*args, **kwargs):
+        kw = dict(kwargs)
+        scale_vec = None
+        if isinstance(kw.get("size"), (tuple, list)) and len(kw["size"]) == 3:
+            scale_vec = tuple(float(v) for v in kw["size"])
+            kw["size"] = 1.0
+        elif any(k in kw for k in ("width", "height", "depth")):
+            sx = float(kw.pop("width", kw.get("size", 2.0)))
+            sy = float(kw.pop("height", kw.get("size", 2.0)))
+            sz = float(kw.pop("depth", kw.get("size", 2.0)))
+            scale_vec = (sx, sy, sz)
+            kw["size"] = 1.0
+        allowed = {"size", "calc_uvs", "enter_editmode", "align", "location", "rotation", "scale"}
+        clean = {k: v for k, v in kw.items() if k in allowed}
+        if scale_vec is not None and "scale" not in clean:
+            clean["scale"] = scale_vec
+        return orig_mesh.primitive_cube_add(*args, **clean)
+
+    def _safe_cylinder_add(*args, **kwargs):
+        kw = dict(kwargs)
+        if "height" in kw and "depth" not in kw:
+            kw["depth"] = kw.pop("height")
+        if "segments" in kw and "vertices" not in kw:
+            kw["vertices"] = int(kw.pop("segments"))
+        allowed = {"vertices", "radius", "depth", "end_fill_type", "calc_uvs", "enter_editmode", "align", "location", "rotation", "scale"}
+        clean = {k: v for k, v in kw.items() if k in allowed}
+        return orig_mesh.primitive_cylinder_add(*args, **clean)
+
+    def _safe_uv_sphere_add(*args, **kwargs):
+        kw = dict(kwargs)
+        if "subdivisions" in kw and "segments" not in kw:
+            kw["segments"] = int(kw.pop("subdivisions"))
+        allowed = {"segments", "ring_count", "radius", "calc_uvs", "enter_editmode", "align", "location", "rotation", "scale"}
+        clean = {k: v for k, v in kw.items() if k in allowed}
+        return orig_mesh.primitive_uv_sphere_add(*args, **clean)
+
+    def _safe_ico_sphere_add(*args, **kwargs):
+        allowed = {"subdivisions", "radius", "calc_uvs", "enter_editmode", "align", "location", "rotation", "scale"}
+        clean = {k: v for k, v in kwargs.items() if k in allowed}
+        return orig_mesh.primitive_ico_sphere_add(*args, **clean)
+
+    def _safe_cone_add(*args, **kwargs):
+        kw = dict(kwargs)
+        if "height" in kw and "depth" not in kw:
+            kw["depth"] = kw.pop("height")
+        if "segments" in kw and "vertices" not in kw:
+            kw["vertices"] = int(kw.pop("segments"))
+        allowed = {"vertices", "radius1", "radius2", "depth", "end_fill_type", "calc_uvs", "enter_editmode", "align", "location", "rotation", "scale"}
+        clean = {k: v for k, v in kw.items() if k in allowed}
+        return orig_mesh.primitive_cone_add(*args, **clean)
+
+    mesh_proxy = _OpsSubProxy(
+        orig_mesh,
+        {
+            "primitive_cube_add": _safe_cube_add,
+            "primitive_cylinder_add": _safe_cylinder_add,
+            "primitive_uv_sphere_add": _safe_uv_sphere_add,
+            "primitive_ico_sphere_add": _safe_ico_sphere_add,
+            "primitive_cone_add": _safe_cone_add,
+        },
+    )
+
+    ops_overrides = {"mesh": mesh_proxy}
+    if hasattr(orig_wm, "stl_export"):
+        orig_export_mesh = getattr(orig_ops, "export_mesh", None)
+
+        def _legacy_stl_export(*args, **kwargs):
+            if orig_export_mesh and hasattr(orig_export_mesh, "stl"):
+                return orig_export_mesh.stl(*args, **kwargs)
+            kw = dict(kwargs)
+            mapped = {}
+            if "filepath" in kw:
+                mapped["filepath"] = kw["filepath"]
+            if "ascii" in kw:
+                mapped["ascii_format"] = bool(kw["ascii"])
+            if "use_selection" in kw:
+                mapped["export_selected_objects"] = bool(kw["use_selection"])
+            if "global_scale" in kw:
+                mapped["global_scale"] = float(kw["global_scale"])
+            if "use_scene_unit" in kw:
+                mapped["use_scene_unit"] = bool(kw["use_scene_unit"])
+            if "use_mesh_modifiers" in kw:
+                mapped["apply_modifiers"] = bool(kw["use_mesh_modifiers"])
+            return orig_wm.stl_export(**mapped)
+
+        if orig_export_mesh is not None:
+            ops_overrides["export_mesh"] = _OpsSubProxy(orig_export_mesh, {"stl": _legacy_stl_export})
+
+    bpy.ops = _OpsSubProxy(orig_ops, ops_overrides)
+
+
+_BSDF_ALIASES = (
+    (r"""inputs\\[\\s*(["'])Specular\\1\\s*\\]""", r"""inputs[\\1Specular IOR Level\\1]"""),
+    (r"""inputs\\[\\s*(["'])Transmission\\1\\s*\\]""", r"""inputs[\\1Transmission Weight\\1]"""),
+    (r"""inputs\\[\\s*(["'])Emission\\1\\s*\\]""", r"""inputs[\\1Emission Color\\1]"""),
+    (r"""inputs\\[\\s*(["'])Subsurface\\1\\s*\\]""", r"""inputs[\\1Subsurface Weight\\1]"""),
+    (r"""inputs\\[\\s*(["'])Coat\\1\\s*\\]""", r"""inputs[\\1Coat Weight\\1]"""),
+)
+
+
+def _normalize_bpy_code(code_str):
+    for pat, repl in _BSDF_ALIASES:
+        code_str = re.sub(pat, repl, code_str)
+    return code_str
+
+
 def execute_code_in_main_thread(code_str):
     global server_running
+    _install_bpy_shims()
     old_stdout, old_stderr = sys.stdout, sys.stderr
     out_buf, err_buf = io.StringIO(), io.StringIO()
     sys.stdout, sys.stderr = out_buf, err_buf
     status, error_msg, file_data = "success", "", None
     try:
+        normalized = _normalize_bpy_code(code_str)
         exec_globals = {
             "bpy": bpy, "bmesh": bmesh, "mathutils": mathutils,
             "math": math, "os": os, "sys": sys, "json": json,
             "base64": base64, "__builtins__": __builtins__,
         }
-        exec(code_str, exec_globals)
+        exec(normalized, exec_globals)
         if "__file_data__" in exec_globals:
             file_data = exec_globals["__file_data__"]
         if exec_globals.get("__stop_server__") is True:
@@ -833,15 +974,24 @@ printable = []
 mockups = []
 others = []
 mockup_prefixes = ("M_", "Mockup_", "Vis_", "Plug_", "Ground_Shadow", "Drawing_Paper", "Floor")
+printable_types = ("MESH", "CURVE", "FONT", "SURFACE", "META")
 
 for o in sorted(bpy.data.objects, key=lambda x: x.name.lower()):
     cols = [c.name for c in o.users_collection]
-    if o.type == "MESH":
+    if o.type in printable_types:
         corners = [o.matrix_world @ mathutils.Vector(c) for c in o.bound_box]
         xs = [v.x for v in corners]
         ys = [v.y for v in corners]
         zs = [v.z for v in corners]
         dims = [round(max(xs) - min(xs), 2), round(max(ys) - min(ys), 2), round(max(zs) - min(zs), 2)]
+        if o.type != "MESH" and max(dims) <= 0.001:
+            others.append({
+                "name": o.name,
+                "type": o.type,
+                "collections": cols,
+                "location": [round(v, 2) for v in o.location],
+            })
+            continue
         center = [round((min(xs)+max(xs))*0.5, 2), round((min(ys)+max(ys))*0.5, 2), round((min(zs)+max(zs))*0.5, 2)]
         bmin = [round(min(xs), 2), round(min(ys), 2), round(min(zs), 2)]
         bmax = [round(max(xs), 2), round(max(ys), 2), round(max(zs), 2)]
@@ -851,6 +1001,9 @@ for o in sorted(bpy.data.objects, key=lambda x: x.name.lower()):
             or (("mockup" in col_str or "plugs" in col_str)
                 and "printable" not in col_str and "case" not in col_str and "inlay" not in col_str)
         )
+        verts = len(o.data.vertices) if (o.type == "MESH" and o.data and hasattr(o.data, "vertices")) else 0
+        polys = len(o.data.polygons) if (o.type == "MESH" and o.data and hasattr(o.data, "polygons")) else 0
+        mats = [m.name for m in o.data.materials if m] if (o.data and hasattr(o.data, "materials")) else []
         info = {
             "name": o.name,
             "type": o.type,
@@ -858,10 +1011,10 @@ for o in sorted(bpy.data.objects, key=lambda x: x.name.lower()):
             "center": center,
             "bmin": bmin,
             "bmax": bmax,
-            "verts": len(o.data.vertices) if o.data else 0,
-            "polys": len(o.data.polygons) if o.data else 0,
+            "verts": verts,
+            "polys": polys,
             "scale": [round(s, 3) for s in o.scale],
-            "materials": [m.name for m in o.data.materials if m] if o.data else [],
+            "materials": mats,
             "modifiers": [m.name for m in o.modifiers],
             "collections": cols,
             "visible": not o.hide_render and o.visible_get(),
@@ -903,18 +1056,33 @@ def build_open_blend_code(filepath: str) -> str:
     )
 
 
-def build_new_project_code(filepath: str, from_template: bool = True) -> str:
-    if from_template:
-        prefix = f"""import bpy
-bpy.ops.wm.open_mainfile(filepath={json.dumps(filepath)})
-to_remove = [o for o in bpy.data.objects if o.type == 'MESH']
+def build_new_project_code(filepath: str, template_path: str = "") -> str:
+    if template_path:
+        prefix = f"""import bpy, mathutils, os
+bpy.ops.wm.open_mainfile(filepath={json.dumps(template_path)})
+scene = bpy.context.scene
+scene.unit_settings.system = "METRIC"
+scene.unit_settings.scale_length = 0.001
+to_remove = [o for o in bpy.data.objects if o.type in ("MESH", "CURVE", "FONT", "SURFACE", "META")]
 for o in to_remove:
     bpy.data.objects.remove(o, do_unlink=True)
 bpy.ops.outliner.orphans_purge(do_local_ids=True, do_linked_ids=True, do_recursive=True)
-bpy.ops.wm.save_mainfile()
+light_presets = [
+    (4.5, (85.0, -95.0, 115.0)),
+    (1.8, (-95.0, -55.0, 50.0)),
+    (2.5, (0.0, 100.0, 85.0)),
+]
+for idx, lobj in enumerate([o for o in bpy.data.objects if o.type == "LIGHT"]):
+    if lobj.location.length < 0.01 and sum(abs(a) for a in lobj.rotation_euler) < 0.01:
+        energy, loc = light_presets[idx % len(light_presets)]
+        lobj.data.energy = energy
+        lobj.location = loc
+        lobj.rotation_euler = (mathutils.Vector((0, 0, 0)) - lobj.location).to_track_quat("-Z", "Y").to_euler()
+os.makedirs(os.path.dirname({json.dumps(filepath)}), exist_ok=True)
+bpy.ops.wm.save_as_mainfile(filepath={json.dumps(filepath)})
 """
     else:
-        prefix = f"""import bpy, mathutils
+        prefix = f"""import bpy, mathutils, os
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
 scene.unit_settings.system = "METRIC"
@@ -939,6 +1107,7 @@ cam.data.clip_end = 5000.0
 cam.location = (75.0, -95.0, 65.0)
 cam.rotation_euler = (mathutils.Vector((0, 0, 0)) - cam.location).to_track_quat("-Z", "Y").to_euler()
 scene.camera = cam
+os.makedirs(os.path.dirname({json.dumps(filepath)}), exist_ok=True)
 bpy.ops.wm.save_as_mainfile(filepath={json.dumps(filepath)})
 """
     return prefix + _INSPECT_CODE
@@ -958,10 +1127,11 @@ def is_mockup(o):
         ("mockup" in cols or "plugs" in cols) and "printable" not in cols and "case" not in cols
     )
 
-meshes = [o for o in bpy.data.objects if o.type == "MESH" and not o.hide_render]
+meshes = [o for o in bpy.data.objects if o.type in ("MESH", "CURVE", "FONT", "SURFACE", "META") and not o.hide_render]
 focus = [o for o in meshes if not is_mockup(o)] or meshes
 
 saved_locs = {{}}
+saved_light_xform = {{}}
 temp_objs = []
 prev_cam = scene.camera
 prev_engine = scene.render.engine
@@ -1003,7 +1173,8 @@ try:
     dims = mx - mn
     span = max(dims.x, dims.y, dims.z, 25.0)
 
-    if not any(o.type == "LIGHT" for o in bpy.data.objects):
+    lights = [o for o in bpy.data.objects if o.type == "LIGHT" and not o.hide_render]
+    if not lights:
         for lname, energy, loc, rot in [
             ("_Studio_Key", 4.0, (center.x + span*1.5, center.y - span*1.5, center.z + span*2.0), (0.65, 0.0, 0.78)),
             ("_Studio_Fill", 1.8, (center.x - span*1.8, center.y - span*1.0, center.z + span*0.8), (1.1, 0.0, -0.9)),
@@ -1016,6 +1187,18 @@ try:
             lobj.location = loc
             lobj.rotation_euler = rot
             temp_objs.append(lobj)
+    else:
+        light_presets = [
+            (4.0, (center.x + span*1.5, center.y - span*1.5, center.z + span*2.0)),
+            (1.8, (center.x - span*1.8, center.y - span*1.0, center.z + span*0.8)),
+            (2.5, (center.x, center.y + span*1.8, center.z + span*1.4)),
+        ]
+        for idx, lo in enumerate(lights):
+            if lo.location.length < 0.01 and sum(abs(a) for a in lo.rotation_euler) < 0.01:
+                saved_light_xform[lo.name] = (lo.location.copy(), lo.rotation_euler.copy())
+                _, target_loc = light_presets[idx % len(light_presets)]
+                lo.location = target_loc
+                lo.rotation_euler = (center - lo.location).to_track_quat("-Z", "Y").to_euler()
 
     if preset != "current" or prev_cam is None:
         cdata = bpy.data.cameras.new("_Studio_Cam")
@@ -1079,6 +1262,10 @@ finally:
     for name, loc in saved_locs.items():
         if name in bpy.data.objects:
             bpy.data.objects[name].location = loc
+    for name, (loc, rot) in saved_light_xform.items():
+        if name in bpy.data.objects:
+            bpy.data.objects[name].location = loc
+            bpy.data.objects[name].rotation_euler = rot
     scene.camera = prev_cam
     scene.render.engine = prev_engine
     scene.render.resolution_x = prev_rx
@@ -1105,30 +1292,47 @@ def build_export_stl_code(object_names: list[str], dest_path: str) -> str:
 targets = {json.dumps(object_names)}
 dest = {json.dumps(dest_path)}
 mockup_prefixes = ("M_", "Mockup_", "Vis_", "Plug_", "Ground_Shadow", "Drawing_Paper", "Floor")
+printable_types = ("MESH", "CURVE", "FONT", "SURFACE", "META")
 
 if targets == ["__all_printable__"]:
     objs = [
         o for o in bpy.data.objects
-        if o.type == "MESH" and not o.name.startswith(mockup_prefixes)
+        if o.type in printable_types and not o.name.startswith(mockup_prefixes)
         and "mockup" not in " ".join(c.name for c in o.users_collection).lower()
         and "plugs" not in " ".join(c.name for c in o.users_collection).lower()
     ]
 else:
-    objs = [bpy.data.objects[n] for n in targets if n in bpy.data.objects and bpy.data.objects[n].type == "MESH"]
+    objs = [bpy.data.objects[n] for n in targets if n in bpy.data.objects and bpy.data.objects[n].type in printable_types]
 
 if not objs:
-    raise RuntimeError("No matching printable mesh objects found to export.")
+    raise RuntimeError("No matching printable geometry objects found to export.")
 
 prev_selected = [o for o in bpy.context.selected_objects]
 prev_active = bpy.context.view_layer.objects.active
 prev_hidden = {{o.name: (o.hide_viewport, o.hide_get()) for o in objs}}
+temp_meshes = []
+export_objs = []
 try:
-    bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
         o.hide_viewport = False
         o.hide_set(False)
+        if o.type == "MESH":
+            export_objs.append(o)
+        else:
+            dup = o.copy()
+            dup.data = o.data.copy()
+            bpy.context.scene.collection.objects.link(dup)
+            bpy.ops.object.select_all(action="DESELECT")
+            dup.select_set(True)
+            bpy.context.view_layer.objects.active = dup
+            bpy.ops.object.convert(target="MESH", keep_original=False)
+            temp_meshes.append(dup)
+            export_objs.append(dup)
+
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in export_objs:
         o.select_set(True)
-    bpy.context.view_layer.objects.active = objs[0]
+    bpy.context.view_layer.objects.active = export_objs[0]
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if hasattr(bpy.ops.wm, "stl_export"):
         bpy.ops.wm.stl_export(
@@ -1154,11 +1358,18 @@ try:
         "objects": [o.name for o in objs],
     }}
 finally:
+    for tmp in temp_meshes:
+        if tmp.name in bpy.data.objects:
+            d = tmp.data
+            bpy.data.objects.remove(tmp, do_unlink=True)
+            if d and d.users == 0 and isinstance(d, bpy.types.Mesh):
+                bpy.data.meshes.remove(d)
     bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
-        hv, hg = prev_hidden.get(o.name, (False, False))
-        o.hide_viewport = hv
-        o.hide_set(hg)
+        if o.name in bpy.data.objects:
+            hv, hg = prev_hidden.get(o.name, (False, False))
+            o.hide_viewport = hv
+            o.hide_set(hg)
     for o in prev_selected:
         if o.name in bpy.data.objects:
             o.select_set(True)
@@ -1348,11 +1559,16 @@ def _build_ai_system_prompt(scene_info: dict[str, Any] | None) -> str:
     return (
         "You are an expert Blender procedural CAD engineer building 3D-printable mechanical parts.\n"
         "Conventions used in this workspace:\n"
-        "1. Units: 1 Blender Unit = 1.0 mm. Keep scale at (1, 1, 1).\n"
+        "1. Units: 1 Blender Unit = 1.0 mm. Keep object scale at (1, 1, 1) after transforms.\n"
         "2. Tolerances: +0.20 mm slide clearance, +0.30 mm clamp clearance, +0.25 mm magnet press-fit (e.g. 6.25x2.20mm pocket for 6x2mm discs).\n"
         "3. Organization: Place printable geometry in `CAD_Printable_Parts` collection and reference hardware mockups (`M_*`, `Mockup_*`) in `Hardware_Mockups`.\n"
-        "4. Blender 5.x APIs: Use `bmesh` (remember `profile=0.5` for convex `bmesh.ops.bevel`) + `bpy.ops.object.modifier_add(type='BOOLEAN')`, "
-        "`Principled BSDF`, and `bpy.ops.wm.stl_export(...)`.\n"
+        "4. Blender 5.2 API Rules (CRITICAL):\n"
+        "   - Use `bmesh` (always set `profile=0.5` for convex `bmesh.ops.bevel`) + `bpy.ops.object.modifier_add(type='BOOLEAN')`.\n"
+        "   - `bpy.ops.mesh.primitive_cube_add(size=1.0, location=(x, y, z))` ONLY takes a scalar float `size` and `location`; NEVER pass `width`, `height`, `depth`, or `sections` (scale via `obj.scale = (w, h, d)` + `bpy.ops.object.transform_apply(scale=True)`).\n"
+        "   - `bpy.ops.mesh.primitive_cylinder_add(vertices=64, radius=r, depth=h, location=(x, y, z))` uses `radius` and `depth` (never `height` or `segments`).\n"
+        "   - If creating 3D text (`bpy.ops.object.text_add`) or curves (`CURVE`), convert them to `MESH` at the end (`bpy.context.view_layer.objects.active = obj; obj.select_set(True); bpy.ops.object.convert(target='MESH')`) and link into `CAD_Printable_Parts`.\n"
+        "   - For `Principled BSDF`, only set `inputs['Base Color']`, `inputs['Roughness']`, and `inputs['Metallic']`. Never use `mesh.use_auto_smooth`.\n"
+        "   - Use `bpy.ops.wm.stl_export(...)` for STL export.\n"
         "5. Output a brief 1-2 sentence summary followed by ONE complete, self-contained ```python``` block ready to exec() inside Blender.\n\n"
         "Current Scene Context:\n" + "\n".join(scene_lines)
     )
@@ -1688,6 +1904,7 @@ def _post_ollama_chat(
     payload = json.dumps({
         "model": model,
         "stream": False,
+        "think": False,
         "options": {"temperature": 0.2, "num_ctx": num_ctx},
         "messages": [
             {"role": "system", "content": sys_prompt},
@@ -1704,7 +1921,8 @@ def _post_ollama_chat(
             )
             with urllib.request.urlopen(req, timeout=180) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            return (data.get("message") or {}).get("content", "")
+            msg_obj = data.get("message") or {}
+            return msg_obj.get("content") or msg_obj.get("thinking") or ""
         except Exception as exc:
             last_err = exc
     raise RuntimeError(
@@ -2258,9 +2476,10 @@ function renderLeft() {
     }
     for (const o of pr) {
       const dims = o.dims ? `${o.dims[0]} × ${o.dims[1]} × ${o.dims[2]} mm` : '';
+      const detail = o.type === 'MESH' ? `${o.polys} faces` : esc(o.type || 'OBJ');
       html += `<div class="item">
         <div class="item-top"><span class="item-title" title="${esc(o.name)}">${esc(o.name)}</span></div>
-        <div class="item-meta">${esc(dims)} &middot; ${o.polys} faces</div>
+        <div class="item-meta">${esc(dims)} &middot; ${detail}</div>
         <div class="item-acts">
           <button class="sm" data-export-one="${esc(o.name)}" data-plate="0">Export STL</button>
           <button class="teal sm" data-export-one="${esc(o.name)}" data-plate="1">Send to Plate</button>
@@ -2951,6 +3170,29 @@ class BlenderStudioPage(_PagesBase):
             return True, res["file_data"]
         return False, None
 
+    def _stop_existing_server_before_spawn(self, settings: dict[str, Any]) -> None:
+        host = settings["server_host"]
+        port = int(settings["server_port"])
+        if not is_port_open(host, port, timeout=0.2):
+            return
+        blender_exec(
+            "import bpy\n"
+            "if bpy.data.filepath and bpy.data.is_dirty:\n"
+            "    try:\n"
+            "        bpy.ops.wm.save_mainfile()\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "__stop_server__ = True\n",
+            host,
+            port,
+            timeout=2.5,
+        )
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            if not is_port_open(host, port, timeout=0.15):
+                break
+            time.sleep(0.1)
+
     def on_message(self, msg: Any) -> None:
         msg = msg if isinstance(msg, dict) else {}
         cmd = msg.get("command")
@@ -2960,9 +3202,11 @@ class BlenderStudioPage(_PagesBase):
             if cmd in ("init", "refresh_all"):
                 self._spawn(self._worker_init, settings)
             elif cmd == "start_blender_headless":
+                self._stop_existing_server_before_spawn(settings)
                 spawn_blender_process(settings, str(msg.get("blend_path") or ""), background=True)
                 self._spawn(self._worker_wait_and_refresh, settings, "Headless Blender server started on :9999.")
             elif cmd == "start_blender_gui":
+                self._stop_existing_server_before_spawn(settings)
                 spawn_blender_process(settings, str(msg.get("blend_path") or ""), background=False)
                 self._spawn(self._worker_wait_and_refresh, settings, "Blender GUI launched with :9999 server.")
             elif cmd == "stop_blender_server":
@@ -3065,7 +3309,6 @@ class BlenderStudioPage(_PagesBase):
         if not safe.lower().endswith(".blend"):
             safe += ".blend"
         projects_root = Path(settings["projects_dir"])
-        projects_root.mkdir(parents=True, exist_ok=True)
         dest = projects_root / safe
         if dest.exists():
             stem = dest.stem
@@ -3074,15 +3317,12 @@ class BlenderStudioPage(_PagesBase):
                 if not cand.exists():
                     dest = cand
                     break
-        tpl = Path(settings["template_blend"]) if settings.get("template_blend") else None
-        if tpl and tpl.is_file():
-            shutil.copy2(tpl, dest)
-            code = build_new_project_code(str(dest), from_template=True)
-        else:
-            code = build_new_project_code(str(dest), from_template=False)
+        tpl = str(settings.get("template_blend") or "").strip()
+        template_path = tpl if (tpl and os.path.isfile(tpl)) else ""
+        code = build_new_project_code(str(dest), template_path=template_path)
 
         if not is_port_open(settings["server_host"], settings["server_port"]):
-            self._post({"command": "info", "text": f"Start Headless Server, then click {dest.name} in Projects.", "log": f"Target: {dest}"})
+            self._post({"command": "info", "text": "Start Headless Server first, then click + New Project.", "log": f"Target: {dest}"})
         else:
             res = blender_exec(code, settings["server_host"], settings["server_port"], timeout=20.0)
             if res["ok"] and isinstance(res["file_data"], dict):
@@ -3115,9 +3355,7 @@ class BlenderStudioPage(_PagesBase):
 
     def _worker_run_bpy(self, settings: dict[str, Any], code: str, auto_render: bool) -> None:
         res = blender_exec(code, settings["server_host"], settings["server_port"], timeout=60.0)
-        scene = None
-        if res["ok"]:
-            _, scene = self._query_scene(settings)
+        _, scene = self._query_scene(settings)
         self._post({
             "command": "bpy_result",
             "ok": res["ok"],
@@ -3125,7 +3363,7 @@ class BlenderStudioPage(_PagesBase):
             "stderr": res["stderr"],
             "scene": scene,
         })
-        if res["ok"] and auto_render:
+        if auto_render and (res["ok"] or (scene and scene.get("printable"))):
             self._worker_render_view(settings, "hero")
 
     def _worker_render_view(self, settings: dict[str, Any], preset: str) -> None:
@@ -3172,7 +3410,6 @@ class BlenderStudioPage(_PagesBase):
 
     def _worker_export_stl(self, settings: dict[str, Any], object_names: list[str], send_to_plate: bool) -> None:
         projects_root = Path(settings["projects_dir"])
-        projects_root.mkdir(parents=True, exist_ok=True)
         if object_names == ["__all_printable__"]:
             with self._lock:
                 stem = Path((self._last_scene or {}).get("filename") or "Blender_Export").stem
@@ -3200,25 +3437,92 @@ class BlenderStudioPage(_PagesBase):
         try:
             with self._lock:
                 scene = self._last_scene
-            if scene is None and is_port_open(settings["server_host"], settings["server_port"]):
+            server_up = is_port_open(settings["server_host"], settings["server_port"])
+            if scene is None and server_up:
                 _, scene = self._query_scene(settings)
+            user_prompt = str(msg.get("prompt") or "")
+            provider = str(msg.get("provider") or "ollama")
+            model = str(msg.get("model") or "qwen2.5-coder:7b")
+            auto_run = bool(msg.get("auto_run"))
+
             res = call_ai_agent(
-                prompt=str(msg.get("prompt") or ""),
-                provider=str(msg.get("provider") or "ollama"),
-                model=str(msg.get("model") or "qwen2.5-coder:7b"),
+                prompt=user_prompt,
+                provider=provider,
+                model=model,
                 scene_info=scene,
                 settings=settings,
                 image_b64=str(msg.get("image_b64") or ""),
                 attachments=list(msg.get("attachments") or []),
             )
+            if not (auto_run and res["code"]):
+                self._post({
+                    "command": "ai_result",
+                    "ok": True,
+                    "explanation": res["explanation"],
+                    "code": res["code"],
+                    "auto_run": False,
+                    "attachments_used": res.get("attachments_used", []),
+                })
+                return
+
+            if not server_up:
+                server_up = is_port_open(settings["server_host"], settings["server_port"])
+            if not server_up:
+                self._post({
+                    "command": "ai_result",
+                    "ok": True,
+                    "explanation": res["explanation"] + " (Start Headless Server / Blender GUI to execute.)",
+                    "code": res["code"],
+                    "auto_run": False,
+                    "attachments_used": res.get("attachments_used", []),
+                })
+                return
+
+            exec_res = blender_exec(res["code"], settings["server_host"], settings["server_port"], timeout=60.0)
+            note_prefix = ""
+            if not exec_res["ok"] and exec_res.get("stderr"):
+                try:
+                    repair_prompt = (
+                        f"Original user request:\n{user_prompt}\n\n"
+                        f"The generated script failed inside Blender {scene.get('version', '5.2.0') if scene else '5.2.0'}:\n"
+                        f"```python\n{res['code']}\n```\n\n"
+                        f"Traceback:\n```\n{exec_res['stderr'][-2000:]}\n```\n\n"
+                        "Fix the error and return ONE complete, self-contained ```python``` block."
+                    )
+                    repaired = call_ai_agent(
+                        prompt=repair_prompt,
+                        provider=provider,
+                        model=model,
+                        scene_info=scene,
+                        settings=settings,
+                        image_b64="",
+                        attachments=[],
+                    )
+                    if repaired.get("code"):
+                        res["code"] = repaired["code"]
+                        note_prefix = "(Auto-repaired after Blender error.) "
+                        exec_res = blender_exec(res["code"], settings["server_host"], settings["server_port"], timeout=60.0)
+                except Exception:
+                    pass
+
             self._post({
                 "command": "ai_result",
                 "ok": True,
-                "explanation": res["explanation"],
+                "explanation": (note_prefix + res["explanation"]).strip(),
                 "code": res["code"],
-                "auto_run": bool(msg.get("auto_run")),
+                "auto_run": False,
                 "attachments_used": res.get("attachments_used", []),
             })
+            _, post_scene = self._query_scene(settings)
+            self._post({
+                "command": "bpy_result",
+                "ok": exec_res["ok"],
+                "stdout": exec_res["stdout"],
+                "stderr": exec_res["stderr"],
+                "scene": post_scene,
+            })
+            if exec_res["ok"] or (post_scene and post_scene.get("printable")):
+                self._worker_render_view(settings, "hero")
         except Exception as exc:
             self._post({"command": "ai_result", "ok": False, "error": str(exc)})
 
@@ -3231,13 +3535,18 @@ if orca is not None and hasattr(orca, "plugin") and hasattr(orca, "base"):
         def register_capabilities(self) -> None:
             if hasattr(orca, "request_permissions"):
                 try:
-                    fs_read = [f"{DEFAULT_PROJECTS_DIR}/*", str(Path.home() / "Blender" / "*")]
+                    fs_read = [
+                        str(DEFAULT_PROJECTS_DIR),
+                        f"{DEFAULT_PROJECTS_DIR}/*",
+                        str(Path.home() / "Blender"),
+                        str(Path.home() / "Blender" / "*"),
+                    ]
                     if os.path.isabs(DEFAULT_BLENDER_BIN):
                         fs_read.append(str(Path(DEFAULT_BLENDER_BIN).parent / "*"))
                     process_list = [DEFAULT_BLENDER_BIN] if DEFAULT_BLENDER_BIN else []
                     orca.request_permissions(
                         fs_read=fs_read,
-                        fs_readwrite=[f"{DEFAULT_PROJECTS_DIR}/*"],
+                        fs_readwrite=[str(DEFAULT_PROJECTS_DIR), f"{DEFAULT_PROJECTS_DIR}/*"],
                         network=[
                             "http://127.0.0.1:9999",
                             "http://localhost:9999",

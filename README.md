@@ -17,7 +17,7 @@
 
 ---
 
-**Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.2.0`) that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with `bpy` (or an AI assistant with reference images & spec documents), inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
+**Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.2.1`) that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with `bpy` (or an AI assistant with reference images & spec documents), inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
 
 <p align="center">
   <img src="assets/hero_render.png" alt="Diagnostic Hero Render in Blender Studio" width="48%">
