@@ -380,14 +380,41 @@ def _cad_bevel(target, offset=1.0, segments=4, profile=0.5):
 
 
 def _cad_cut(target, cutter, delete_cutter=True):
+    if isinstance(cutter, (list, tuple)):
+        base = target
+        for c in cutter:
+            base = _cad_boolean(base, c, "DIFFERENCE", delete_tool=delete_cutter)
+        return base
     return _cad_boolean(target, cutter, "DIFFERENCE", delete_tool=delete_cutter)
 
 
-def _cad_union(target, tool, delete_tool=True):
+def _cad_union(target, tool=None, delete_tool=True):
+    if tool is None and isinstance(target, (list, tuple)) and target:
+        base = _resolve_obj(target[0])
+        for t in target[1:]:
+            base = _cad_boolean(base, t, "UNION", delete_tool=delete_tool)
+        return base
+    if isinstance(target, str) and (bpy is None or bpy.data.objects.get(target) is None) and isinstance(tool, (list, tuple)) and tool:
+        base = _resolve_obj(tool[0])
+        if base:
+            base.name = target
+        for t in tool[1:]:
+            base = _cad_boolean(base, t, "UNION", delete_tool=delete_tool)
+        return base
+    if isinstance(tool, (list, tuple)):
+        base = target
+        for t in tool:
+            base = _cad_boolean(base, t, "UNION", delete_tool=delete_tool)
+        return base
     return _cad_boolean(target, tool, "UNION", delete_tool=delete_tool)
 
 
 def _cad_intersect(target, tool, delete_tool=True):
+    if isinstance(tool, (list, tuple)):
+        base = target
+        for t in tool:
+            base = _cad_boolean(base, t, "INTERSECT", delete_tool=delete_tool)
+        return base
     return _cad_boolean(target, tool, "INTERSECT", delete_tool=delete_tool)
 
 
@@ -1394,7 +1421,7 @@ def _self_heal_with_ollama(broken_code, tb_text):
         "model": "qwen2.5-coder:7b",
         "stream": False,
         "think": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192},
+        "options": {"temperature": 0.1, "num_ctx": 8192, "num_thread": 4},
         "messages": [
             {"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg},
@@ -2697,51 +2724,114 @@ def _extract_python_block(text: str) -> str:
 
 def _build_ai_system_prompt(scene_info: dict[str, Any] | None) -> str:
     scene_lines = []
+    has_existing_parts = False
     if scene_info and scene_info.get("filepath"):
         scene_lines.append(f"Active .blend: {scene_info.get('filename')} ({scene_info.get('filepath')})")
         scene_lines.append(f"Blender version: {scene_info.get('version', '5.2.0')}")
-        for p in scene_info.get("printable", [])[:25]:
-            scene_lines.append(
-                f"  - Printable Mesh `{p['name']}`: dims={p['dims']}mm, center={p['center']}, "
-                f"bmin={p['bmin']}, bmax={p['bmax']}, polys={p['polys']}"
-            )
-        for m in scene_info.get("mockups", [])[:25]:
-            scene_lines.append(
-                f"  - Hardware Mockup `{m['name']}`: dims={m['dims']}mm, center={m['center']}"
-            )
+        printable_objs = scene_info.get("printable", [])
+        if printable_objs:
+            has_existing_parts = True
+            scene_lines.append("Existing Printable Mesh Objects in Scene:")
+            for p in printable_objs[:25]:
+                scene_lines.append(
+                    f"  - `{p['name']}`: dims={p['dims']}mm [X={p['dims'][0]}, Y={p['dims'][1]}, Z={p['dims'][2]}], "
+                    f"center={p['center']}, bmin={p['bmin']}, bmax={p['bmax']}, polys={p.get('polys', 0)}"
+                )
+        mockup_objs = scene_info.get("mockups", [])
+        if mockup_objs:
+            scene_lines.append("Reference Hardware Mockups in Scene (DO NOT DELETE/OVERWRITE):")
+            for m in mockup_objs[:25]:
+                scene_lines.append(
+                    f"  - `{m['name']}`: center={m['center']}, dims={m.get('dims', [])}, bmin={m.get('bmin', [])}, bmax={m.get('bmax', [])}"
+                )
     else:
         scene_lines.append("Active scene: No scene metadata loaded (assume empty 1 BU = 1 mm workspace).")
 
+    rule_clear = (
+        "CRITICAL RULE ON `cad.clear()`:\n"
+        "- DO NOT CALL `cad.clear()` when modifying an existing part or adding a modular bracket to the scene! Calling `cad.clear()` wipes out the user's existing CAD designs, imported carriage mounts, and reference mockups!\n"
+        "- ONLY call `cad.clear()` if the user explicitly commands 'clear scene', 'start from scratch', 'reset', or if the scene is completely empty.\n"
+        "- When adding a modular bracket (e.g. `Ender5_BLTouch_Watchdog_Mount` or a separate sensor arm): model ONLY the new bracket/part, referencing existing parts by name via `bpy.data.objects.get(...)` without deleting existing objects.\n"
+        if has_existing_parts else
+        "SCENE IS EMPTY: Start by calling `cad.clear()` to initialize mm units, collections, and 3-point lighting.\n"
+    )
+
     return (
-        "You are an expert Blender 5.2 procedural CAD engineer building mechanically functional, 3D-printable parts.\n"
-        "Units: 1 Blender Unit = 1.0 mm. Keep scale at (1, 1, 1). In `cad`, `location=(x, y, z)` sets the bottom face Z (unless `centered_z=True`).\n\n"
-        "MANDATORY MECHANICAL WORKFLOW (DO NOT GUESS ISOLATED FLOATING BOXES):\n"
-        "1. HARDWARE MOCKUPS FIRST: Before cutting or connecting brackets, model the mating hardware objects (`M_*`, `mockup=True`) in `Hardware_Mockups` (e.g., extruder body, nozzle tip target, carriage holes, PCB board/camera lens) at true physical coordinates so alignment, bolt clearances, and camera sightlines are verified.\n"
-        "2. CONNECTED STRUCTURAL GEOMETRY: NEVER rotate a `cad.box(...)` in place hoping it bridges two distant points—rotating around a part center misses targets and leaves disconnected floating islands! ALWAYS connect offset brackets/pods back to the main plate using `cad.strut(start=p1, end=p2, width=..., thickness=..., flat_bottom=True)` and union them cleanly (`cad.union`).\n"
-        "3. ORIENTED HOUSINGS & LOCAL POCKETS: NEVER boolean-cut a rotated housing with an unrotated world box! Use `cad.oriented_box(name=..., width=..., depth=..., height=..., location=..., aim_at=(tx,ty,tz), pocket_size=(pw,pd,ph), aperture_diameter=..., usb_slot_size=(sw,sh), corner_radius=...)` which cuts pockets/apertures/USB channels in local coordinates first, aims `+Z` at `aim_at`, and bakes clean manifold geometry.\n"
-        "4. PRINT BED ORIENTATION & AUDIT: Keep printable base faces resting cleanly at `Z = 0.0` (avoid sub-bed hangs; call `cad.place_on_bed(part)` if needed) and ALWAYS call `cad.audit_geometry()` at the end of your script so disconnected islands (`islands > 1`) and non-manifold edges are caught.\n\n"
-        "RECOMMENDED BUILT-IN `cad` MODULE (pre-loaded in Blender, 1 BU = 1 mm, zero boilerplate):\n"
-        "  cad.clear()  # resets printable/mockup objects, sets mm units & 3-point lights (omit if editing existing parts)\n"
-        "  cad.rounded_plate(name='Card_Base', width=85.6, depth=54.0, thickness=2.0, corner_radius=4.0, rim_width=2.2, rim_height=1.0)\n"
-        "  cad.box(name='Body', width=40.0, depth=30.0, height=12.0, location=(0, 0, 0), corner_radius=2.0, color=(0.2, 0.25, 0.3, 1.0), mockup=False)\n"
-        "  cad.cylinder(name='Boss', diameter=10.0, height=8.0, location=(0, 0, 0), segments=64, color=(0.2, 0.25, 0.3, 1.0), mockup=False)\n"
-        "  cad.tube(name='Bushing', outer_diameter=12.0, inner_diameter=8.2, height=10.0, location=(0, 0, 0))\n"
-        "  cad.strut(name='Arm', start=(x1,y1,z1), end=(x2,y2,z2), width=12.0, thickness=6.0, end_width=None, flat_bottom=True, color=...)\n"
-        "  cad.oriented_box(name='Pod', width=26.0, depth=22.0, height=12.0, location=(x,y,z), aim_at=(tx,ty,tz), pocket_size=(pw,pd,ph), aperture_diameter=9.5, usb_slot_size=(10.5,5.0), corner_radius=2.5)\n"
-        "  cad.hole(target, diameter=3.4, depth=50.0, location=(x, y, z), axis='Z')\n"
-        "  cad.slot(target, start=(x1, y1, z), end=(x2, y2, z), diameter=3.4, depth=40.0)\n"
-        "  cad.counterbore_hole(target, diameter=3.4, cb_diameter=6.4, cb_depth=3.5, depth=40.0, location=(x, y, z), axis='Z', flip=False)\n"
-        "  cad.cut(target, cutter) / cad.union(target, tool) / cad.intersect(target, tool) / cad.bevel(target, offset=1.0)\n"
-        "  cad.magnet_pocket(target, diameter=6.25, depth=2.20, location=(x, y, 0)) / cad.m3_hole(target, depth=20.0, location=(x, y, 0))\n"
-        "  cad.text(name='Label', text='PART', size=10.0, height=1.2, location=(0, 0, 2.0), color=(0.91, 0.49, 0.05, 1.0))\n"
-        "  cad.image_relief(name='Logo_Relief', image_path=None, width=42.0, depth=28.0, height=1.2, location=(0, 0, 2.0))\n"
-        "  cad.place_on_bed(target, z_floor=0.0) / cad.color(obj, (r, g, b, 1.0), roughness=0.35) / cad.audit_geometry()\n\n"
-        "LOW-LEVEL `bpy`/`bmesh` RULES (if not using `cad`):\n"
-        "- Place printable geometry in `CAD_Printable_Parts` and mockups (`M_*`, `Mockup_*`) in `Hardware_Mockups`.\n"
-        "- Use `bmesh` (`profile=0.5` on `bmesh.ops.bevel(bm, geom=..., offset=..., segments=4, profile=0.5)`) — NEVER invent `primitive_cube`, `shade_convert`, or `extrude_region_move`.\n"
-        "- Convert any `FONT`/`CURVE` objects to `MESH` with `bpy.ops.object.convert(target='MESH')`.\n"
-        "- Tolerances: +0.20 mm slide clearance, +0.30 mm clamp clearance, +0.25 mm magnet press-fit.\n"
-        "Output a 1-2 sentence summary followed by ONE complete, self-contained ```python``` block ending with `cad.audit_geometry()`.\n\n"
+        "You are an expert procedural CAD engineer building mechanically functional, 3D-printable parts for Blender 5.2.\n"
+        "Units: 1 Blender Unit = 1.0 millimeter. Scale must stay strictly at (1, 1, 1).\n\n"
+        + rule_clear +
+        "\nCOORDINATE SYSTEM & PRIMITIVE RULES (PRECISION GROUNDING):\n"
+        "1. `cad.box(name, width, depth, height, location=(cx, cy, z_floor), corner_radius=0.0, centered_z=False)`:\n"
+        "   - `width` is X size, `depth` is Y size, `height` is Z size.\n"
+        "   - `cx` and `cy` are the CENTER coordinates in X and Y.\n"
+        "   - `z_floor` is the bottom face Z coordinate (part spans Z = z_floor to z_floor + height).\n"
+        "   - Part extends in world space from [cx - width/2, cy - depth/2, z_floor] to [cx + width/2, cy + depth/2, z_floor + height].\n\n"
+        "2. `cad.cylinder(name, diameter=..., height=..., location=(cx, cy, z_floor), segments=64)`:\n"
+        "   - Centered in XY at (cx, cy). Bottom face rests at z_floor.\n\n"
+        "3. `cad.strut(name, start=(x1, y1, z1), end=(x2, y2, z2), width=10.0, thickness=6.0, flat_bottom=True)`:\n"
+        "   - Creates a rigid, manifold capsule/gusset arm bridging points `start` and `end`.\n"
+        "   - If `flat_bottom=True`, the bottom of the arm is leveled to min(z1, z2) for clean print bed adhesion.\n"
+        "   - Connect struts to the SOLID BACK, BASE, OR MOUNTING FLANGE of sensor pods—NEVER penetrate the camera lens aperture or PCB cavity!\n\n"
+        "4. `cad.oriented_box(name, width, depth, height, location=(x,y,z), aim_at=(tx,ty,tz), pocket_size=(pw,pd,ph), aperture_diameter=..., usb_slot_size=(sw,sh), corner_radius=...)`:\n"
+        "   - Pre-cuts camera/sensor pocket, lens bore, and USB port in local coordinates, then aims local +Z directly at target (tx, ty, tz).\n"
+        "   - The lens looks outward along +Z toward aim_at.\n\n"
+        "5. FASTENERS & CUTOUTS (STANDARDIZED DIMENSIONS):\n"
+        "   - M3 clearance hole: diameter=3.4 mm.\n"
+        "   - M3 socket head cap counterbore: `cad.counterbore_hole(target, diameter=3.4, cb_diameter=6.4, cb_depth=3.5, depth=40.0, location=(x,y,z), axis='Z', flip=False)`.\n"
+        "   - M3 heat-set insert pocket: diameter=4.2 mm, depth=4.5 mm.\n"
+        "   - BLTouch probe mounting: 2x M3 holes spaced exactly 18.0 mm on center.\n"
+        "   - BIQU H2 extruder mounting: 4x M3 rear pattern, 35.0 mm horizontal spacing x 15.0 mm vertical spacing.\n"
+        "   - Adjustment slots: `cad.slot(target, start=(x1,y1,z), end=(x2,y2,z), diameter=3.4, depth=40.0)`.\n\n"
+        "6. BED ORIENTATION & AUDIT:\n"
+        "   - All printable parts must rest flat at Z = 0.0 with positive Z thickness (`cad.place_on_bed(obj)`).\n"
+        "   - Always union touching structural solids (`cad.union`) before cutting final mounting holes.\n"
+        "   - Always end your script with `cad.audit_geometry()`.\n\n"
+        "BUILT-IN `cad` MODULE FUNCTIONS:\n"
+        "  cad.clear()                                    # Resets scene (ONLY use when starting from scratch)\n"
+        "  cad.box(name, width, depth, height, location=(cx,cy,z), corner_radius=0.0, color=...)\n"
+        "  cad.rounded_plate(name, width, depth, thickness, corner_radius=4.0, location=(cx,cy,z))\n"
+        "  cad.cylinder(name, diameter=..., height=..., location=(cx,cy,z), segments=64)\n"
+        "  cad.tube(name, outer_diameter=..., inner_diameter=..., height=..., location=(cx,cy,z))\n"
+        "  cad.strut(name, start=(x1,y1,z1), end=(x2,y2,z2), width=10.0, thickness=6.0, flat_bottom=True)\n"
+        "  cad.oriented_box(name, width=26.0, depth=22.0, height=12.0, location=(x,y,z), aim_at=(tx,ty,tz), pocket_size=(21.5,18.0,4.0), aperture_diameter=9.5, usb_slot_size=(10.5,5.0), corner_radius=2.5)\n"
+        "  cad.hole(target, diameter=3.4, depth=50.0, location=(x,y,z), axis='Z')\n"
+        "  cad.counterbore_hole(target, diameter=3.4, cb_diameter=6.4, cb_depth=3.5, depth=40.0, location=(x,y,z), axis='Z', flip=False)\n"
+        "  cad.slot(target, start=(x1,y1,z), end=(x2,y2,z), diameter=3.4, depth=40.0)\n"
+        "  cad.magnet_pocket(target, diameter=6.25, depth=2.20, location=(x,y,z))\n"
+        "  cad.m3_hole(target, depth=20.0, location=(x,y,z), nut_trap=True)\n"
+        "  cad.union(target, tool) / cad.cut(target, cutter) / cad.intersect(target, tool)  # tool can also be a list of objects\n"
+        "  cad.place_on_bed(target, z_floor=0.0)\n"
+        "  cad.color(target, (r, g, b, 1.0), roughness=0.35)\n"
+        "  cad.audit_geometry()\n\n"
+        "EXAMPLE 1: MODULAR BLTOUCH + CAMERA POD (Without calling cad.clear()):\n"
+        "```python\n"
+        "import cad, bpy\n"
+        "# 1. Model separate modular BLTouch + camera mount bracket\n"
+        "# BLTouch shelf with 18mm center-to-center M3 mounting holes\n"
+        "shelf = cad.box('BLTouch_Shelf', width=26.0, depth=14.0, height=4.5, location=(-28.0, -12.0, 0.0), corner_radius=2.0)\n"
+        "cad.counterbore_hole(shelf, diameter=3.4, cb_diameter=6.4, cb_depth=2.2, location=(-28.0 - 9.0, -12.0, 4.5), axis='Z', flip=False)\n"
+        "cad.counterbore_hole(shelf, diameter=3.4, cb_diameter=6.4, cb_depth=2.2, location=(-28.0 + 9.0, -12.0, 4.5), axis='Z', flip=False)\n\n"
+        "# 2. Aimed camera housing for Seeed XIAO Sense (lens aimed at nozzle tip)\n"
+        "cam_pod = cad.oriented_box('Cam_Pod', width=24.0, depth=20.0, height=10.0, location=(-36.0, -8.0, 22.0),\n"
+        "                           aim_at=(13.9, -18.0, 28.0), pocket_size=(21.2, 17.8, 3.8), aperture_diameter=9.2,\n"
+        "                           usb_slot_size=(10.0, 4.5), corner_radius=2.0)\n\n"
+        "# 3. Rigid structural strut bridging shelf to pod\n"
+        "arm = cad.strut('Pod_Gusset', start=(-28.0, -8.0, 4.0), end=(-36.0, -8.0, 18.0), width=9.0, thickness=5.0, flat_bottom=False)\n"
+        "mount = cad.union(shelf, [arm, cam_pod])\n"
+        "cad.place_on_bed(mount)\n"
+        "cad.audit_geometry()\n"
+        "```\n\n"
+        "EXAMPLE 2: MODIFYING AN EXISTING MOUNT EAR (Extending ear by 1.0mm):\n"
+        "```python\n"
+        "import cad, bpy\n"
+        "part = bpy.data.objects.get('Ender5_BIQU_H2_Mount')\n"
+        "if part:\n"
+        "    # Add reinforcing rib / 1mm ear extension\n"
+        "    rib = cad.box('Ear_Extension', width=1.0, depth=14.0, height=7.0, location=(-47.0, 18.8, 0.0))\n"
+        "    cad.union(part, rib)\n"
+        "    cad.audit_geometry()\n"
+        "```\n\n"
+        "Output a 1-2 sentence concise summary, followed by ONE self-contained ```python``` code block ending with `cad.audit_geometry()`.\n\n"
         "Current Scene Context:\n" + "\n".join(scene_lines)
     )
 
@@ -3205,11 +3295,11 @@ _GEMINI_MODEL_ALIASES: dict[str, str] = {
     "gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
 }
 _GEMINI_FALLBACK_ORDER: tuple[str, ...] = (
+    "gemini-3.8-flash",
     "gemini-3-flash-preview",
+    "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
     "gemini-flash-lite-latest",
 )
 
@@ -3290,7 +3380,7 @@ def _call_gemini_chat(
     errors: list[str] = []
     for cand in candidates:
         try:
-            text = _call_openai_chat(endpoint, api_key, cand, sys_prompt, prompt, images, timeout=35.0)
+            text = _call_openai_chat(endpoint, api_key, cand, sys_prompt, prompt, images, timeout=25.0)
             if not text.strip():
                 errors.append(f"{cand}: empty response")
                 continue
@@ -3369,7 +3459,7 @@ def _post_ollama_chat(
         "model": model,
         "stream": False,
         "think": False,
-        "options": {"temperature": 0.2, "num_ctx": num_ctx},
+        "options": {"temperature": 0.2, "num_ctx": num_ctx, "num_thread": 4},
         "messages": [
             {"role": "system", "content": sys_prompt},
             user_msg,
@@ -3690,6 +3780,54 @@ PAGE = r"""<!doctype html>
     cursor: pointer; font-weight: 700; line-height: 1; font-size: 12px;
   }
   .attach-chip .rm:hover { color: var(--err); background: transparent; }
+  .btn-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255,255,255,0.35);
+    border-radius: 50%;
+    border-top-color: #ffffff;
+    animation: btnSpin 0.75s linear infinite;
+    vertical-align: middle;
+    margin-right: 5px;
+    flex-shrink: 0;
+  }
+  @keyframes btnSpin {
+    to { transform: rotate(360deg); }
+  }
+  button.primary.generating {
+    background: linear-gradient(135deg, #d97008, #f59e0b) !important;
+    border-color: #f59e0b !important;
+    cursor: wait !important;
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.45);
+    opacity: 0.95;
+    pointer-events: none;
+  }
+  .ai-progress-track {
+    display: none;
+    width: 100%;
+    height: 3px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 6px;
+    position: relative;
+  }
+  .ai-progress-track.active {
+    display: block;
+  }
+  .ai-progress-fill {
+    width: 45%;
+    height: 100%;
+    background: linear-gradient(90deg, #26a69a, #e87d0d, #26a69a);
+    background-size: 200% 100%;
+    border-radius: 3px;
+    animation: aiProgressPulse 1.25s ease-in-out infinite;
+  }
+  @keyframes aiProgressPulse {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(250%); }
+  }
   .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   textarea {
     width: 100%; resize: vertical; padding: 8px; line-height: 1.4;
@@ -3785,14 +3923,13 @@ PAGE = r"""<!doctype html>
         <span>AI CAD Assistant</span>
         <div class="spacer"></div>
         <select id="ai-model" style="max-width:215px;font-size:11px;padding:3px 6px">
+          <option value="gemini::gemini-3.8-flash">Gemini 3.8 Flash (High Precision)</option>
+          <option value="gemini::gemini-3-flash-preview">Gemini 3 Flash (Fast)</option>
+          <option value="gemini::gemini-3.5-flash">Gemini 3.5 Flash</option>
+          <option value="gemini::gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+          <option value="gemini::gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
           <option value="ollama::qwen2.5-coder:7b">Ollama: qwen2.5-coder:7b</option>
           <option value="ollama::lukey03/qwen3.5-9b-abliterated-vision:latest">Ollama: qwen3.5-9b-vision</option>
-          <option value="gemini::gemini-3-flash-preview">Gemini 3 Flash (Fast)</option>
-          <option value="gemini::gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
-          <option value="gemini::gemini-3.5-flash">Gemini 3.5 Flash</option>
-          <option value="gemini::gemini-3.6-flash">Gemini 3.6 Flash</option>
-          <option value="gemini::gemini-3.8-flash">Gemini 3.8 Flash</option>
-          <option value="gemini::gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
           <option value="openai::custom">OpenAI-Compatible (Settings)</option>
         </select>
       </div>
@@ -3800,13 +3937,17 @@ PAGE = r"""<!doctype html>
         <textarea id="ai-prompt" rows="3" placeholder="Describe a part or edit, or drop / paste reference images, docs &amp; CAD (.step, .3mf, .stl, .md, .pdf, .py)..."></textarea>
         <input type="file" id="ai-file-input" multiple accept="image/*,.step,.stp,.3mf,.stl,.md,.txt,.json,.csv,.py,.scad,.yaml,.yml,.xml,.svg,.html,.pdf,.log,.ini,.toml" style="display:none">
         <div class="attach-bar" id="ai-attachments" style="display:none"></div>
+        <div class="ai-progress-track" id="ai-progress-track"><div class="ai-progress-fill"></div></div>
         <div class="row" style="margin-top:6px">
           <button class="sm" id="btn-ai-attach" title="Attach pictures, STEP/3MF/STL CAD models, or documents (.md, .py, .scad, .pdf) — or drag &amp; drop / paste into prompt">+ Image / CAD / Doc</button>
           <button class="sm danger" id="btn-ai-clear-att" style="display:none" title="Remove all attached reference files">Clear</button>
           <label class="chk"><input type="checkbox" id="chk-auto-run" checked> Auto-run</label>
           <label class="chk" title="Also include the current viewport diagnostic render"><input type="checkbox" id="chk-attach-img"> +Viewport</label>
           <div class="spacer"></div>
-          <button class="primary sm" id="btn-ai-go">Generate bpy</button>
+          <button class="primary sm" id="btn-ai-go" title="Generate Blender Python CAD script">
+            <span class="btn-spinner" id="ai-spinner" style="display:none"></span>
+            <span id="ai-btn-text">Generate bpy</span>
+          </button>
         </div>
       </div>
 
@@ -4322,14 +4463,49 @@ $('ai-prompt').addEventListener('paste', e => {
   }
 });
 
+let aiProgressTimer = null;
+let aiProgressSecs = 0;
+
+function setAiGenerating(active, modelName) {
+  const btn = $('btn-ai-go');
+  const sp = $('ai-spinner');
+  const txt = $('ai-btn-text');
+  const trk = $('ai-progress-track');
+  if (aiProgressTimer) {
+    clearInterval(aiProgressTimer);
+    aiProgressTimer = null;
+  }
+  if (!btn) return;
+  if (active) {
+    btn.classList.add('generating');
+    btn.disabled = true;
+    if (sp) sp.style.display = 'inline-block';
+    if (trk) trk.classList.add('active');
+    aiProgressSecs = 0;
+    if (txt) txt.textContent = 'Generating (0s)...';
+    aiProgressTimer = setInterval(() => {
+      aiProgressSecs++;
+      if (txt) txt.textContent = `Generating (${aiProgressSecs}s)...`;
+    }, 1000);
+  } else {
+    btn.classList.remove('generating');
+    btn.disabled = false;
+    if (sp) sp.style.display = 'none';
+    if (trk) trk.classList.remove('active');
+    if (txt) txt.textContent = 'Generate bpy';
+  }
+}
+
 $('btn-ai-go').onclick = () => {
   const rawPrompt = $('ai-prompt').value.trim();
   if (!rawPrompt && !S.aiAttachments.length) return;
   const prompt = rawPrompt || 'Analyze the attached reference files and generate the corresponding Blender bpy CAD script.';
-  const [provider, model] = ($('ai-model').value || 'ollama::qwen2.5-coder:7b').split('::');
+  const [provider, model] = ($('ai-model').value || 'gemini::gemini-3.8-flash').split('::');
   const attCount = S.aiAttachments.length + ($('chk-attach-img').checked && S.lastRenderB64 ? 1 : 0);
   const attNote = attCount ? ` (+${attCount} attachment${attCount > 1 ? 's' : ''})` : '';
-  setStatus(`Asking ${provider === 'openai' ? (S.settings.openai_model || 'custom model') : model}${attNote}...`, true);
+  const displayModel = provider === 'openai' ? (S.settings.openai_model || 'custom model') : model;
+  setStatus(`Generating bpy via ${displayModel}${attNote}...`, true);
+  setAiGenerating(true, displayModel);
   post({
     command: 'ai_prompt',
     prompt,
@@ -4444,6 +4620,7 @@ if (window.orca && window.orca.onMessage) {
         if (msg.scene) { S.connected = true; S.scene = msg.scene; renderTopBar(); renderLeft(); }
         break;
       case 'ai_result':
+        setAiGenerating(false);
         if (msg.ok) {
           if (msg.attachments_used && msg.attachments_used.length) {
             log('[AI Context] ' + msg.attachments_used.join(', '), 'info');
