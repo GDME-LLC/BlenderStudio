@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from scripts.generate_changelog import generate_changelog
+from scripts.generate_media import generate_all_media
 SRC_PY = ROOT / "blender_studio.py"
 DIST_DIR = ROOT / "dist"
 ASSETS_DIR = ROOT / "assets"
@@ -155,9 +156,10 @@ def build() -> None:
     version = get_version()
     print(f"Building Blender Studio v{version} distribution...")
 
-    # 0. Synchronize changelog
+    # 0. Synchronize changelog and generate showcase media
     generate_changelog()
-    print("  [OK] Synchronized CHANGELOG.md and dist/latest_changelog.md")
+    generate_all_media()
+    print("  [OK] Synchronized CHANGELOG.md, release notes, and showcase media")
 
     # 1. Compile check source
     py_compile.compile(str(SRC_PY), doraise=True)
@@ -188,6 +190,10 @@ def build() -> None:
         zf.write(DIST_DIR / "blender_studio_any.py", arcname="blender_studio_any.py")
         zf.write(DIST_DIR / "icon.png", arcname="icon.png")
         zf.write(DIST_DIR / "icon.svg", arcname="icon.svg")
+        for m in ("hub_hero_banner.png", "workflow_pipeline.png", "diagnostic_views_showcase.png"):
+            mp = DIST_DIR / m
+            if mp.is_file():
+                zf.write(mp, arcname=f"media/{m}")
         for doc in ("README.md", "CHANGELOG.md", "LICENSE", "QUICK_REFERENCE.md", "USER_GUIDE.md"):
             p = ROOT / doc
             if p.is_file():

@@ -1,7 +1,7 @@
 # Blender Studio for OrcaSlicer
 
 <p align="center">
-  <img src="assets/tab_icon.svg" alt="Blender Studio Icon" width="64" height="64">
+  <img src="assets/hub_hero_banner.png" alt="Blender Studio for OrcaSlicer" width="100%">
 </p>
 
 <p align="center">
@@ -21,8 +21,7 @@
 **Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.2.5`) compatible with OrcaSlicer v2.5.0 and v2.5.1+ that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with the built-in `cad` helper or `bpy` (or a local Ollama two-stage Vision + Coder / Gemini 3.8 Flash AI assistant with reference CAD files, images & spec documents), inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
 
 <p align="center">
-  <img src="assets/hero_render.png" alt="Diagnostic Hero Render in Blender Studio" width="48%">
-  <img src="assets/exploded_render.png" alt="Diagnostic Exploded Render with Hardware Mockups" width="48%">
+  <img src="assets/diagnostic_views_showcase.png" alt="Diagnostic Views Showcase" width="100%">
 </p>
 
 *Sample enclosure (`Studio_Test_Pod.blend`) rendered inside Blender Studio — showing printable parts (`CAD_Printable_Parts`) alongside reference hardware mockups (`M_PCB_Board`, `M_USB_Port`, and `Mockup_Mag_0..3`) in Hero and Exploded diagnostic views.*
@@ -83,7 +82,11 @@ All child processes run with sanitized, allowlisted environment variables (`PATH
 
 ---
 
-## Architecture Overview
+## Architecture & Workflow
+
+<p align="center">
+  <img src="assets/workflow_pipeline.png" alt="Blender Studio Workflow Pipeline" width="100%">
+</p>
 
 ```
 +-----------------------------------------------------------------------+

@@ -3676,41 +3676,68 @@ PAGE = r"""<!doctype html>
 <title>Blender Studio</title>
 <style>
   :root {
-    --bg: #16181d;
-    --panel: #1e2128;
-    --card: #252932;
-    --card-hi: #2d323e;
-    --border: #323846;
-    --text: #e6ebf2;
-    --muted: #9aa4b2;
-    --accent: #e87d0d;
-    --accent-hi: #ff9424;
-    --teal: #26a69a;
-    --teal-hi: #34c2b4;
-    --ok: #3fb950;
-    --err: #f85149;
-    --warn: #d29922;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    --sans: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, sans-serif;
+    --bg: #0f1217;
+    --panel: #161a23;
+    --card: #1e2430;
+    --card-hi: #272e3d;
+    --border: rgba(255, 255, 255, 0.08);
+    --border-hi: rgba(0, 174, 157, 0.5);
+    --text: #f0f4f9;
+    --muted: #8b96a5;
+    --accent: #ea7600;
+    --accent-hi: #ff9800;
+    --teal: #00ae9d;
+    --teal-hi: #1de9b6;
+    --ok: #34d399;
+    --err: #f87171;
+    --warn: #fbbf24;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 var(--sans); overflow: hidden; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #0f1217; }
+  ::-webkit-scrollbar-thumb { background: #2a3242; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3b465c; }
+
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.4 var(--sans); overflow: hidden; -webkit-font-smoothing: antialiased;
+  }
   .app { display: flex; flex-direction: column; height: 100vh; }
 
   .topbar {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 8px 14px; background: linear-gradient(180deg, #181d27 0%, #131720 100%);
+    border-bottom: 1px solid var(--border); box-shadow: 0 2px 10px rgba(0,0,0,0.25);
   }
-  .brand { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 14px; letter-spacing: .2px; margin-right: 6px; }
-  .brand .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--err); box-shadow: 0 0 0 2px rgba(255,255,255,0.06); }
-  .brand .dot.on { background: var(--ok); }
-  .brand .dot.busy { background: var(--warn); }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; letter-spacing: .2px; margin-right: 6px; }
+  .brand .dot {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--err);
+    box-shadow: 0 0 0 2px rgba(248,113,113,0.2); transition: all .3s ease;
+  }
+  .brand .dot.on {
+    background: var(--ok); box-shadow: 0 0 0 2px rgba(52,211,153,0.3);
+    animation: srvPulse 2s infinite;
+  }
+  .brand .dot.busy {
+    background: var(--warn); box-shadow: 0 0 0 2px rgba(251,191,36,0.3);
+    animation: srvPulse 1s infinite;
+  }
+  @keyframes srvPulse {
+    0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.6); }
+    70% { box-shadow: 0 0 0 6px rgba(52,211,153,0); }
+    100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+  }
+
   .pill {
-    font-size: 11px; padding: 3px 8px; border-radius: 999px;
-    background: var(--card); border: 1px solid var(--border); color: var(--muted);
+    font-size: 11px; padding: 4px 10px; border-radius: 999px;
+    background: rgba(30, 36, 48, 0.7); backdrop-filter: blur(8px);
+    border: 1px solid var(--border); color: var(--muted);
     max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: inline-flex; align-items: center; gap: 5px;
   }
-  .pill.on { color: #b8f5c1; border-color: rgba(63,185,80,.45); background: rgba(63,185,80,.12); }
+  .pill.on { color: #a7f3d0; border-color: rgba(52,211,153,0.4); background: rgba(16, 185, 129, 0.12); }
   .spacer { flex: 1; }
 
   button, select, input, textarea {
@@ -3718,98 +3745,128 @@ PAGE = r"""<!doctype html>
     border: 1px solid var(--border); border-radius: 6px; outline: none;
   }
   button {
-    padding: 5px 10px; cursor: pointer; font-weight: 500; font-size: 12px;
-    transition: background .12s, border-color .12s;
+    padding: 6px 12px; cursor: pointer; font-weight: 500; font-size: 12px;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: linear-gradient(180deg, #232a38 0%, #1b212c 100%);
+    color: var(--text); transition: all .14s ease;
   }
-  button:hover:not(:disabled) { background: var(--card-hi); border-color: #4a5366; }
+  button:hover:not(:disabled) {
+    background: linear-gradient(180deg, #2b3344 0%, #202735 100%);
+    border-color: rgba(255,255,255,0.18); transform: translateY(-1px);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+  }
+  button:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
   button:disabled { opacity: .45; cursor: default; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #121417; font-weight: 700; }
-  button.primary:hover:not(:disabled) { background: var(--accent-hi); border-color: var(--accent-hi); }
-  button.teal { background: var(--teal); border-color: var(--teal); color: #0c1716; font-weight: 700; }
-  button.teal:hover:not(:disabled) { background: var(--teal-hi); border-color: var(--teal-hi); }
-  button.sm { padding: 3px 8px; font-size: 11px; border-radius: 5px; }
-  button.danger { color: #ff9a95; border-color: rgba(248,81,73,.35); }
-  button.danger:hover:not(:disabled) { background: rgba(248,81,73,.14); }
-  select, input[type="text"], input[type="number"], input[type="password"] { padding: 5px 8px; font-size: 12px; }
+  button.primary {
+    background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%);
+    border-color: #f59e0b; color: #0f1217; font-weight: 700;
+  }
+  button.primary:hover:not(:disabled) {
+    background: linear-gradient(180deg, #fbbf24 0%, #ea580c 100%);
+    border-color: #fbbf24; box-shadow: 0 2px 10px rgba(245,158,11,0.35);
+  }
+  button.teal {
+    background: linear-gradient(180deg, #14b8a6 0%, #0d9488 100%);
+    border-color: #14b8a6; color: #042f2e; font-weight: 700;
+  }
+  button.teal:hover:not(:disabled) {
+    background: linear-gradient(180deg, #2dd4bf 0%, #0f766e 100%);
+    border-color: #2dd4bf; box-shadow: 0 2px 10px rgba(20,184,166,0.35);
+  }
+  button.sm { padding: 4px 9px; font-size: 11px; border-radius: 5px; }
+  button.danger { color: #fca5a5; border-color: rgba(248,113,113,0.35); }
+  button.danger:hover:not(:disabled) { background: rgba(248,113,113,0.16); border-color: #f87171; }
+  select, input[type="text"], input[type="number"], input[type="password"] {
+    padding: 6px 9px; font-size: 12px; border-radius: 6px;
+    background: #141720; border: 1px solid var(--border);
+  }
+  select:focus, input:focus, textarea:focus { border-color: var(--teal); box-shadow: 0 0 0 2px rgba(0, 174, 157, 0.25); }
 
   .main {
     flex: 1; min-height: 0;
-    display: grid; grid-template-columns: 315px 1fr 410px; gap: 1px; background: var(--border);
+    display: grid; grid-template-columns: 320px 1fr 420px; gap: 1px; background: var(--border);
   }
   .col { background: var(--bg); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
   .col-head {
-    display: flex; align-items: center; gap: 6px; padding: 7px 10px;
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
     background: var(--panel); border-bottom: 1px solid var(--border); font-weight: 600; font-size: 12px;
   }
-  .tabs { display: flex; gap: 4px; padding: 6px 8px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  .tabs { display: flex; gap: 6px; padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
   .tab {
-    flex: 1; text-align: center; padding: 5px 6px; border-radius: 5px; font-size: 11px;
+    flex: 1; text-align: center; padding: 6px 8px; border-radius: 6px; font-size: 11px;
     color: var(--muted); background: transparent; border: 1px solid transparent; cursor: pointer;
+    transition: all .15s ease;
   }
-  .tab.active { color: var(--text); background: var(--card); border-color: var(--border); font-weight: 600; }
-  .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; }
+  .tab:hover:not(.active) { color: var(--text); background: rgba(255,255,255,0.03); }
+  .tab.active { color: var(--text); background: var(--card); border-color: var(--border); font-weight: 600; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+  .scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; }
 
   .item {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 7px;
-    padding: 8px 9px; margin-bottom: 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; margin-bottom: 7px; transition: all .14s ease;
   }
-  .item:hover { border-color: #465066; }
-  .item.active { border-color: var(--accent); background: rgba(232,125,13,.08); }
+  .item:hover { border-color: rgba(255,255,255,0.18); transform: translateY(-1px); box-shadow: 0 3px 8px rgba(0,0,0,0.2); }
+  .item.active { border-color: var(--accent); background: rgba(234,118,0,0.09); box-shadow: 0 0 0 1px var(--accent); }
   .item-top { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
   .item-title { font-weight: 600; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .item-meta { font-size: 11px; color: var(--muted); margin-top: 2px; font-family: var(--mono); }
-  .item-acts { display: flex; gap: 5px; margin-top: 6px; flex-wrap: wrap; }
+  .item-meta { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--mono); }
+  .item-acts { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
   .sec-lbl {
-    font-size: 10px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted);
-    margin: 8px 2px 5px; display: flex; align-items: center; justify-content: space-between;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+    margin: 10px 4px 6px; display: flex; align-items: center; justify-content: space-between; font-weight: 700;
   }
 
   .cam-bar {
-    display: flex; align-items: center; gap: 5px; flex-wrap: wrap; padding: 7px 10px;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 12px;
     background: var(--panel); border-bottom: 1px solid var(--border);
   }
   .viewport {
     flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center;
-    background: radial-gradient(circle at center, #202531 0%, #121419 100%);
-    overflow: hidden; padding: 12px;
+    background: radial-gradient(circle at center, #1b212c 0%, #0b0d12 100%);
+    background-image: radial-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), radial-gradient(circle at center, #1b212c 0%, #0b0d12 100%);
+    background-size: 20px 20px, 100% 100%;
+    overflow: hidden; padding: 14px;
   }
   .viewport img {
-    max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px;
-    box-shadow: 0 10px 30px rgba(0,0,0,.5); transition: transform .15s ease;
+    max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 8px;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.06); transition: transform .15s ease;
   }
-  .vp-empty { text-align: center; color: var(--muted); max-width: 380px; }
-  .vp-empty h3 { margin: 0 0 6px; color: var(--text); font-size: 15px; }
+  .vp-empty { text-align: center; color: var(--muted); max-width: 400px; padding: 20px; }
+  .vp-empty h3 { margin: 0 0 8px; color: var(--text); font-size: 16px; font-weight: 600; }
   .vp-badge {
-    position: absolute; top: 10px; left: 10px; font-size: 11px; font-family: var(--mono);
-    background: rgba(22,24,29,.82); border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
+    position: absolute; top: 12px; left: 12px; font-size: 11px; font-family: var(--mono);
+    background: rgba(18, 22, 30, 0.85); backdrop-filter: blur(8px);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
   }
   .filmstrip {
-    height: 92px; display: flex; gap: 6px; align-items: center; overflow-x: auto;
-    padding: 7px 10px; background: var(--panel); border-top: 1px solid var(--border);
+    height: 96px; display: flex; gap: 8px; align-items: center; overflow-x: auto;
+    padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--border);
   }
   .thumb {
-    flex: 0 0 auto; width: 118px; height: 74px; border-radius: 5px; border: 1px solid var(--border);
+    flex: 0 0 auto; width: 120px; height: 76px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--card); overflow: hidden; cursor: pointer; position: relative;
-    display: flex; align-items: flex-end; justify-content: center;
+    display: flex; align-items: flex-end; justify-content: center; transition: all .15s ease;
   }
-  .thumb:hover { border-color: var(--accent); }
+  .thumb:hover { border-color: var(--accent); transform: scale(1.03); box-shadow: 0 4px 12px rgba(0,0,0,0.35); }
   .thumb span {
-    position: relative; z-index: 1; width: 100%; font-size: 10px; padding: 2px 4px;
-    background: rgba(15,17,22,.82); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
+    position: relative; z-index: 1; width: 100%; font-size: 10px; padding: 3px 5px;
+    background: rgba(15,17,22,.85); backdrop-filter: blur(4px); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; text-align: center; font-weight: 500;
   }
 
-  .ai-box { padding: 9px 10px; border-bottom: 1px solid var(--border); background: var(--panel); transition: background .12s, border-color .12s; }
-  .ai-box.dragover { outline: 1px dashed var(--accent); outline-offset: -3px; background: rgba(232,125,13,.08); }
-  .attach-bar { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; max-height: 84px; overflow-y: auto; }
+  .ai-box { padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--panel); transition: all .14s ease; }
+  .ai-box.dragover { outline: 1px dashed var(--accent); outline-offset: -3px; background: rgba(234,118,0,0.08); }
+  .attach-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; max-height: 88px; overflow-y: auto; }
   .attach-chip {
-    display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
-    padding: 2px 6px; border-radius: 5px; background: var(--card); border: 1px solid var(--border);
-    font-size: 11px; color: var(--text);
+    display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+    padding: 3px 8px; border-radius: 6px; background: var(--card); border: 1px solid var(--border);
+    font-size: 11px; color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.2);
   }
-  .attach-chip img { width: 18px; height: 18px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
+  .attach-chip img { width: 18px; height: 18px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
   .attach-badge {
-    font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 4px;
-    border-radius: 3px; background: rgba(38,166,154,.22); color: #7ae2d8; flex-shrink: 0;
+    font-size: 9px; font-weight: 700; text-transform: uppercase; padding: 1px 5px;
+    border-radius: 4px; background: rgba(0,174,157,0.2); color: #5eead4; flex-shrink: 0;
   }
   .attach-chip .att-name { max-width: 155px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attach-chip .att-size { color: var(--muted); font-size: 10px; font-family: var(--mono); }
@@ -3819,106 +3876,91 @@ PAGE = r"""<!doctype html>
   }
   .attach-chip .rm:hover { color: var(--err); background: transparent; }
   .btn-spinner {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border: 2px solid rgba(255,255,255,0.35);
-    border-radius: 50%;
-    border-top-color: #ffffff;
-    animation: btnSpin 0.75s linear infinite;
-    vertical-align: middle;
-    margin-right: 5px;
-    flex-shrink: 0;
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid rgba(255,255,255,0.35); border-radius: 50%;
+    border-top-color: #ffffff; animation: btnSpin 0.75s linear infinite;
+    vertical-align: middle; margin-right: 5px; flex-shrink: 0;
   }
-  @keyframes btnSpin {
-    to { transform: rotate(360deg); }
-  }
+  @keyframes btnSpin { to { transform: rotate(360deg); } }
   button.primary.generating {
-    background: linear-gradient(135deg, #d97008, #f59e0b) !important;
-    border-color: #f59e0b !important;
-    cursor: wait !important;
-    box-shadow: 0 0 12px rgba(245, 158, 11, 0.45);
-    opacity: 0.95;
-    pointer-events: none;
+    background: linear-gradient(135deg, #d97706, #f59e0b) !important;
+    border-color: #f59e0b !important; cursor: wait !important;
+    box-shadow: 0 0 14px rgba(245, 158, 11, 0.45); opacity: 0.95; pointer-events: none;
   }
   .ai-progress-track {
-    display: none;
-    width: 100%;
-    height: 3px;
-    background: rgba(255,255,255,0.08);
-    border-radius: 3px;
-    overflow: hidden;
-    margin-top: 6px;
-    position: relative;
+    display: none; width: 100%; height: 3px; background: rgba(255,255,255,0.08);
+    border-radius: 3px; overflow: hidden; margin-top: 7px; position: relative;
   }
-  .ai-progress-track.active {
-    display: block;
-  }
+  .ai-progress-track.active { display: block; }
   .ai-progress-fill {
-    width: 45%;
-    height: 100%;
-    background: linear-gradient(90deg, #26a69a, #e87d0d, #26a69a);
-    background-size: 200% 100%;
-    border-radius: 3px;
+    width: 45%; height: 100%; background: linear-gradient(90deg, #00ae9d, #ea7600, #00ae9d);
+    background-size: 200% 100%; border-radius: 3px;
     animation: aiProgressPulse 1.25s ease-in-out infinite;
   }
   @keyframes aiProgressPulse {
     0% { transform: translateX(-100%); }
     100% { transform: translateX(250%); }
   }
-  .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
   textarea {
-    width: 100%; resize: vertical; padding: 8px; line-height: 1.4;
-    background: #12141a; color: #e8eef7; border: 1px solid var(--border); border-radius: 6px;
+    width: 100%; resize: vertical; padding: 9px; line-height: 1.45;
+    background: #11141c; color: #f0f4f9; border: 1px solid var(--border); border-radius: 6px;
   }
-  .code-ed { flex: 1; min-height: 160px; font: 12px/1.45 var(--mono); tab-size: 4; }
+  .code-ed { flex: 1; min-height: 160px; font: 12px/1.5 var(--mono); tab-size: 4; }
   .console {
-    height: 150px; overflow-y: auto; padding: 8px 10px; background: #0f1115;
-    border-top: 1px solid var(--border); font: 11.5px/1.4 var(--mono); white-space: pre-wrap; word-break: break-word;
+    height: 150px; overflow-y: auto; padding: 9px 12px; background: #0c0e13;
+    border-top: 1px solid var(--border); font: 11.5px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word;
   }
-  .console .ok { color: #8ce99a; }
-  .console .err { color: #ff8787; }
-  .console .info { color: #8ecae6; }
+  .console .ok { color: #86efac; }
+  .console .err { color: #fca5a5; }
+  .console .info { color: #7dd3fc; }
 
   .statusbar {
     display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    padding: 5px 12px; background: var(--panel); border-top: 1px solid var(--border);
+    padding: 6px 14px; background: var(--panel); border-top: 1px solid var(--border);
     font-size: 11px; color: var(--muted);
   }
   .modal-bg {
-    position: fixed; inset: 0; background: rgba(0,0,0,.65); display: none;
-    align-items: center; justify-content: center; z-index: 50;
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+    display: none; align-items: center; justify-content: center; z-index: 50;
   }
   .modal-bg.open { display: flex; }
   .modal {
-    width: 520px; max-width: 94vw; max-height: 92vh; overflow-y: auto;
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 10px; padding: 16px; box-shadow: 0 20px 50px rgba(0,0,0,.6);
+    width: 530px; max-width: 94vw; max-height: 92vh; overflow-y: auto;
+    background: var(--panel); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px; padding: 18px; box-shadow: 0 24px 60px rgba(0,0,0,0.7);
   }
-  .modal h3 { margin: 0 0 10px; font-size: 15px; }
-  .field { margin-bottom: 9px; }
-  .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  .modal h3 { margin: 0 0 12px; font-size: 16px; font-weight: 700; color: var(--text); }
+  .field { margin-bottom: 11px; }
+  .field label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
   .field input, .field select { width: 100%; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  label.chk { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  label.chk { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
 </style>
 </head>
 <body>
 <div class="app">
   <div class="topbar">
     <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 32 32" fill="none" style="vertical-align:middle;flex-shrink:0">
+        <rect x="2" y="2" width="28" height="28" rx="7" fill="#181d27" stroke="#00ae9d" stroke-width="2"/>
+        <path d="M7 11L16 6L25 11L16 16L7 11Z" fill="#00ae9d" fill-opacity="0.35" stroke="#1de9b6" stroke-width="1.5"/>
+        <path d="M7 11V21L16 26V16L7 11Z" fill="#1b222e" stroke="#4a5568" stroke-width="1.5"/>
+        <path d="M25 11V21L16 26V16L25 11Z" fill="#2d1d11" stroke="#ea7600" stroke-width="1.5"/>
+        <circle cx="16" cy="16" r="3" fill="#ea7600"/>
+      </svg>
       <span class="dot" id="srv-dot"></span>
       <span>Blender Studio</span>
     </div>
     <span class="pill" id="srv-pill">Disconnected (:9999)</span>
     <span class="pill" id="blend-pill">No .blend loaded</span>
     <div class="spacer"></div>
-    <button class="teal sm" id="btn-headless" title="Start background Blender socket daemon on port 9999">Start Headless Server</button>
-    <button class="sm" id="btn-gui" title="Open Blender GUI with socket server active">Launch Blender GUI</button>
-    <button class="sm" id="btn-refresh">Refresh</button>
-    <button class="sm" id="btn-save">Save .blend</button>
-    <button class="sm danger" id="btn-stop" title="Stop port 9999 Blender server">Stop Server</button>
-    <button class="sm" id="btn-settings">Settings</button>
+    <button class="teal sm" id="btn-headless" title="Start background Blender socket daemon on port 9999">⚡ Headless :9999</button>
+    <button class="sm" id="btn-gui" title="Open Blender GUI with socket server active">🖥️ Blender GUI</button>
+    <button class="sm" id="btn-refresh" title="Refresh scene and designs">🔄 Refresh</button>
+    <button class="sm" id="btn-save" title="Save current .blend">💾 Save</button>
+    <button class="sm danger" id="btn-stop" title="Stop port 9999 Blender server">⏹ Stop</button>
+    <button class="sm" id="btn-settings" title="Plugin Settings &amp; Bootstrap Helper">⚙ Settings</button>
   </div>
 
   <div class="main">
@@ -3933,23 +3975,29 @@ PAGE = r"""<!doctype html>
 
     <div class="col">
       <div class="cam-bar">
-        <span style="font-weight:600;font-size:12px;margin-right:4px">Render:</span>
-        <button class="primary sm" data-cam="hero">Hero</button>
-        <button class="sm" data-cam="top">Top</button>
-        <button class="sm" data-cam="front">Front</button>
-        <button class="sm" data-cam="iso">Isometric</button>
-        <button class="sm" data-cam="exploded">Exploded</button>
-        <button class="sm" data-cam="current">Scene Cam</button>
+        <span style="font-weight:700;font-size:11px;letter-spacing:.4px;color:var(--muted);margin-right:2px">CAMERA:</span>
+        <button class="primary sm" data-cam="hero" title="Hero 3-point diagnostic view">✨ Hero</button>
+        <button class="sm" data-cam="top" title="Orthographic Top view">⬆ Top</button>
+        <button class="sm" data-cam="front" title="Orthographic Front view">⮕ Front</button>
+        <button class="sm" data-cam="iso" title="Isometric 30° view">📐 Iso</button>
+        <button class="sm" data-cam="exploded" title="Exploded hardware mockup inspection">💥 Exploded</button>
+        <button class="sm" data-cam="current" title="Active Blender camera">🎥 Scene Cam</button>
         <div class="spacer"></div>
-        <button class="sm" id="btn-zoom-out">-</button>
-        <button class="sm" id="btn-zoom-fit">Fit</button>
-        <button class="sm" id="btn-zoom-in">+</button>
+        <button class="sm" id="btn-zoom-out" title="Zoom out">🔍 -</button>
+        <button class="sm" id="btn-zoom-fit" title="Fit to viewport">⛶ Fit</button>
+        <button class="sm" id="btn-zoom-in" title="Zoom in">🔍 +</button>
       </div>
       <div class="viewport" id="viewport">
         <div class="vp-badge" id="vp-badge" style="display:none"></div>
         <div class="vp-empty" id="vp-empty">
+          <div style="font-size:36px;margin-bottom:8px">📐</div>
           <h3>Render-Inspect-Refine Viewport</h3>
-          <p>Start the headless Blender server (or launch Blender GUI), pick a project or scene, and click <b>Hero</b> or <b>Exploded</b> to inspect geometry before sending STLs to your OrcaSlicer plate.</p>
+          <p style="line-height:1.5;margin-bottom:12px">Start the headless Blender server (or launch Blender GUI), pick a project or scene, and click <b>Hero</b> or <b>Exploded</b> to inspect geometry before sending STLs to your OrcaSlicer plate.</p>
+          <div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap">
+            <span class="pill">⚡ Metric 1 BU = 1 mm</span>
+            <span class="pill">🔍 Watertight Manifold Audit</span>
+            <span class="pill">🚀 One-Click Send to Plate</span>
+          </div>
         </div>
         <img id="vp-img" style="display:none" alt="Diagnostic render preview">
       </div>
@@ -3958,7 +4006,7 @@ PAGE = r"""<!doctype html>
 
     <div class="col">
       <div class="col-head">
-        <span>AI CAD Assistant</span>
+        <span>🤖 AI CAD Assistant</span>
         <div class="spacer"></div>
         <select id="ai-model" style="max-width:215px;font-size:11px;padding:3px 6px">
           <option value="gemini::gemini-3.8-flash">Gemini 3.8 Flash (High Precision)</option>
@@ -3977,20 +4025,20 @@ PAGE = r"""<!doctype html>
         <div class="attach-bar" id="ai-attachments" style="display:none"></div>
         <div class="ai-progress-track" id="ai-progress-track"><div class="ai-progress-fill"></div></div>
         <div class="row" style="margin-top:6px">
-          <button class="sm" id="btn-ai-attach" title="Attach pictures, STEP/3MF/STL CAD models, or documents (.md, .py, .scad, .pdf) — or drag &amp; drop / paste into prompt">+ Image / CAD / Doc</button>
+          <button class="sm" id="btn-ai-attach" title="Attach pictures, STEP/3MF/STL CAD models, or documents (.md, .py, .scad, .pdf) — or drag &amp; drop / paste into prompt">📎 + File / CAD</button>
           <button class="sm danger" id="btn-ai-clear-att" style="display:none" title="Remove all attached reference files">Clear</button>
           <label class="chk"><input type="checkbox" id="chk-auto-run" checked> Auto-run</label>
           <label class="chk" title="Also include the current viewport diagnostic render"><input type="checkbox" id="chk-attach-img"> +Viewport</label>
           <div class="spacer"></div>
           <button class="primary sm" id="btn-ai-go" title="Generate Blender Python CAD script">
             <span class="btn-spinner" id="ai-spinner" style="display:none"></span>
-            <span id="ai-btn-text">Generate bpy</span>
+            <span id="ai-btn-text">✨ Generate bpy</span>
           </button>
         </div>
       </div>
 
       <div class="col-head">
-        <span>bpy Script &amp; Macros</span>
+        <span>🐍 bpy Script &amp; Macros</span>
         <div class="spacer"></div>
         <button class="sm" data-macro="studio_rig" title="Add 3-point lighting & RenderCam">Rig</button>
         <button class="sm" data-macro="magnet_mockup" title="Add 6x2mm magnet mockup">+Magnet</button>
@@ -4001,10 +4049,10 @@ PAGE = r"""<!doctype html>
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;padding:8px;gap:6px">
         <textarea id="bpy-code" class="code-ed" spellcheck="false" placeholder="# Write Blender Python (bpy / bmesh / mathutils) or load a macro / AI script..."></textarea>
         <div class="row">
-          <button class="teal sm" id="btn-run-bpy">Run in Blender (Ctrl+Enter)</button>
-          <button class="sm" id="btn-clear-log">Clear Log</button>
+          <button class="teal sm" id="btn-run-bpy">▶ Run bpy (Ctrl+Enter)</button>
+          <button class="sm" id="btn-clear-log">Clear</button>
           <div class="spacer"></div>
-          <button class="primary sm" id="btn-plate-all">Export &amp; Plate All</button>
+          <button class="primary sm" id="btn-plate-all">🚀 Export &amp; Plate All</button>
         </div>
       </div>
       <div class="console" id="console"></div>
@@ -4123,15 +4171,15 @@ function renderTopBar() {
   if (S.connected && S.scene) {
     dot.className = 'dot on';
     const mode = S.scene.background ? 'Headless' : 'GUI';
-    pill.textContent = `Connected :${port} (${mode})`;
+    pill.innerHTML = `🟢 <b>Connected :${port}</b> (${mode})`;
     pill.className = 'pill on';
-    bpill.textContent = S.scene.filename || '(Unsaved)';
+    bpill.innerHTML = `📁 <b>${esc(S.scene.filename || '(Unsaved)')}</b>`;
     bpill.title = S.scene.filepath || '';
   } else {
     dot.className = 'dot';
-    pill.textContent = `Disconnected (:${port})`;
+    pill.innerHTML = `⚪ Disconnected (:${port})`;
     pill.className = 'pill';
-    bpill.textContent = 'No active Blender server';
+    bpill.innerHTML = '📁 No active .blend loaded';
   }
 }
 
@@ -4139,25 +4187,32 @@ function renderLeft() {
   const body = $('left-body');
   if (S.ltab === 'scene') {
     if (!S.connected || !S.scene) {
-      body.innerHTML = `<div class="item"><div class="item-title">Blender Server Offline</div>
-        <div class="item-meta">Click <b>Start Headless Server</b> or <b>Launch Blender GUI</b> above, or open any .blend from the <b>Projects</b> tab.</div></div>`;
+      body.innerHTML = `<div class="item" style="border-left:3px solid var(--err)">
+        <div class="item-title">Blender Server Offline</div>
+        <div class="item-meta" style="margin-top:4px">Start <b>Headless Server</b> or <b>Blender GUI</b> above, or open a .blend from the <b>Projects</b> tab.</div>
+      </div>`;
       return;
     }
     const pr = S.scene.printable || [];
     const mk = S.scene.mockups || [];
-    let html = `<div class="sec-lbl"><span>Printable Meshes (${pr.length})</span></div>`;
+    let html = `<div class="sec-lbl"><span>Printable CAD Meshes (${pr.length})</span></div>`;
     if (!pr.length) {
-      html += `<div class="item"><div class="item-meta">No printable meshes in current scene. Use AI CAD or a macro to generate parts.</div></div>`;
+      html += `<div class="item"><div class="item-meta">No printable meshes in current scene. Prompt AI CAD or run a macro to create geometry.</div></div>`;
     }
     for (const o of pr) {
       const dims = o.dims ? `${o.dims[0]} × ${o.dims[1]} × ${o.dims[2]} mm` : '';
       const detail = o.type === 'MESH' ? `${o.polys} faces` : esc(o.type || 'OBJ');
-      html += `<div class="item">
-        <div class="item-top"><span class="item-title" title="${esc(o.name)}">${esc(o.name)}</span></div>
-        <div class="item-meta">${esc(dims)} &middot; ${detail}</div>
+      html += `<div class="item" style="border-left:3px solid var(--teal)">
+        <div class="item-top">
+          <span class="item-title" title="${esc(o.name)}">🖨️ ${esc(o.name)}</span>
+        </div>
+        <div style="margin:4px 0 6px">
+          <span class="pill" style="font-family:var(--mono);font-size:10px;padding:2px 7px">${esc(dims)}</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:4px">${detail}</span>
+        </div>
         <div class="item-acts">
           <button class="sm" data-export-one="${esc(o.name)}" data-plate="0">Export STL</button>
-          <button class="teal sm" data-export-one="${esc(o.name)}" data-plate="1">Send to Plate</button>
+          <button class="teal sm" data-export-one="${esc(o.name)}" data-plate="1">🚀 Send to Plate</button>
         </div>
       </div>`;
     }
@@ -4166,8 +4221,10 @@ function renderLeft() {
     if (S.showMockups) {
       for (const m of mk) {
         const dims = m.dims ? `${m.dims[0]} × ${m.dims[1]} × ${m.dims[2]} mm` : '';
-        html += `<div class="item"><div class="item-top"><span class="item-title">${esc(m.name)}</span></div>
-          <div class="item-meta">${esc(dims)}</div></div>`;
+        html += `<div class="item" style="border-left:3px solid var(--accent)">
+          <div class="item-top"><span class="item-title">🔩 ${esc(m.name)}</span></div>
+          <div style="margin-top:4px"><span class="pill" style="font-family:var(--mono);font-size:10px;padding:2px 7px">${esc(dims)}</span></div>
+        </div>`;
       }
     }
     body.innerHTML = html;

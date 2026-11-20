@@ -56,7 +56,10 @@ def test_dist_assets():
     assert (dist / "blender_studio_any.py").is_file(), "blender_studio_any.py missing"
     assert (dist / "icon.png").is_file(), "icon.png missing"
     assert (dist / "icon.svg").is_file(), "icon.svg missing"
-    print("✓ Distribution assets verified in dist/")
+    assert (dist / "hub_hero_banner.png").is_file(), "hub_hero_banner.png missing"
+    assert (dist / "workflow_pipeline.png").is_file(), "workflow_pipeline.png missing"
+    assert (dist / "diagnostic_views_showcase.png").is_file(), "diagnostic_views_showcase.png missing"
+    print("✓ Distribution assets verified in dist/ (including showcase media)")
 
 
 def test_changelog():

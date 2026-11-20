@@ -89,3 +89,6 @@ jobs:
             dist/blender_studio_v*.zip
             dist/SHA256SUMS.txt
             dist/CHANGELOG.txt
+            dist/hub_hero_banner.png
+            dist/workflow_pipeline.png
+            dist/diagnostic_views_showcase.png
