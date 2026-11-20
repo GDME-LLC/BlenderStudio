@@ -13,7 +13,7 @@
   <a href="USER_GUIDE.md">Full User Guide</a> &bull;
   <a href="CHANGELOG.md">Changelog</a> &bull;
   <a href="standalone/server_bootstrap.py">Standalone Server</a> &bull;
-  <a href="LICENSE">MIT License</a>
+  <a href="LICENSE">PolyForm Shield License 1.0.0</a>
 </p>
 
 ---
@@ -121,4 +121,5 @@ All child processes run with sanitized, allowlisted environment variables (`PATH
 ---
 
 ## License
-Released under the [MIT License](LICENSE) — Copyright (c) 2026 Gabrial McCauley (GDME LLC).
+Released under the [PolyForm Shield License 1.0.0](LICENSE) — Copyright (c) 2026 Gabrial McCauley (GDME LLC). Commercial licensing inquiries: Gabrial@gdmellccom.com.
+Note: `standalone/server_bootstrap.py` is licensed under GNU GPL v3.0 (`GPL-3.0-or-later`) for Blender `bpy` compatibility.
