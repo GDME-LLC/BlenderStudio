@@ -78,6 +78,7 @@ jobs:
           draft: ${{ github.event.inputs.draft || false }}
           prerelease: ${{ github.event.inputs.prerelease || false }}
           generate_release_notes: false
+          make_latest: true
           files: |
             dist/blender_studio_any.py
             dist/blender_studio_linux_x86_64.py
