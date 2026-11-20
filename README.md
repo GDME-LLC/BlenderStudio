@@ -50,19 +50,35 @@
 - **OrcaSlicer v2.5.0+** (with Python `Pages` plugin support enabled)
 - **Blender 4.2+ / 5.x** (tested on **Blender 5.2.0 LTS**)
 
-### Install via OrcaSlicer UI (Recommended)
-1. Download [`blender_studio.py`](blender_studio.py) from this repository.
-2. Open **OrcaSlicer** &rarr; open **Plugins** &rarr; click **Install local plugin** and select `blender_studio.py`.
-3. Restart OrcaSlicer (or reload plugins) and approve the local filesystem / localhost `:9999` / Blender executable permissions if prompted.
+### Method 1: Subscribe via Orca Cloud Plugin Hub (Recommended)
+1. Subscribe directly in your browser or OrcaSlicer via the official [**Orca Cloud Plugin Hub**](https://cloud.orcaslicer.com/app/plugins/shared-plugins/461ebb05-bc36-4247-bb6d-a8e92c32354b).
+2. Open **OrcaSlicer** &rarr; open **Plugins** &rarr; click **Sync** / **Install**.
+3. On first load, approve the upfront permissions dialog (local socket `:9999`, designs folder, Blender binary).
 4. Click the new **Blender Studio** tab in OrcaSlicer's top navigation bar!
 
-### Manual Side-Load Install
+> **100% Self-Contained:** Plugin Hub subscribers do not need to download extra files from GitHub to connect existing Blender sessions. Simply open **Settings (⚙)** inside the Blender Studio tab and click **📋 Copy Bootstrap Script** to paste directly into Blender's Scripting tab, or click **💾 Export server_bootstrap.py** into your designs directory.
+
+### Method 2: Install via Local Plugin File (.py)
+1. Download [`blender_studio.py`](blender_studio.py) (or `blender_studio_any.py` from [`dist/`](dist/)).
+2. Open **OrcaSlicer** &rarr; open **Plugins** &rarr; click **Install local plugin** and select the `.py` file.
+3. Restart OrcaSlicer (or reload plugins) and approve permissions.
+
+### Method 3: Manual Side-Load Install
 Copy `blender_studio.py` into your OrcaSlicer plugins directory under a matching folder name:
 - **Linux:** `~/.config/OrcaSlicer/orca_plugins/blender_studio/blender_studio.py`
 - **Windows:** `%APPDATA%\OrcaSlicer\orca_plugins\blender_studio\blender_studio.py`
 - **macOS:** `~/Library/Application Support/OrcaSlicer/orca_plugins/blender_studio/blender_studio.py`
 
-> **Tip:** Blender Studio automatically searches standard install paths for Blender across Windows, macOS, and Linux, or you can set a custom path in **Settings** inside the tab.
+---
+
+### Upfront Permissions Notice
+OrcaSlicer 2.5.0+ introduces fine-grained plugin permission security. To prevent repetitive runtime prompts on every render or AI query, Blender Studio declares its permissions upfront inside `register_capabilities()`:
+- **Local Sockets & Network (`network_socket`, `network_http`):** Bridge connection to Blender on `127.0.0.1:9999`, local Ollama on `127.0.0.1:11434-11435`, and user-configured AI endpoints (`generativelanguage.googleapis.com`, OpenAI-compatible).
+- **Filesystem Access (`fs_read`, `fs_readwrite`):** Your configured `3D Designs` project directory, OrcaSlicer `blender_studio` configuration and render caches, and temporary STL export directories.
+- **Process Spawning (`process`):** Execution of the local Blender executable (`blender`) and build plate handoff helpers (`gdbus`, `xdg-open`, `open`).
+- **Threading (`threading`):** Background worker threads for responsive UI and non-blocking renders.
+
+All child processes run with sanitized, allowlisted environment variables (`PATH`, `HOME`, `DISPLAY`, etc.)—never leaking full system environment dictionaries or secrets.
 
 ---
 

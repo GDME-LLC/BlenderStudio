@@ -35,6 +35,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -1430,8 +1431,12 @@ def _self_heal_with_ollama(broken_code, tb_text):
     }).encode("utf-8")
     for base in ("http://127.0.0.1:11435", "http://127.0.0.1:11434"):
         try:
+            endpoint = base + "/api/chat"
+            parsed = urllib.parse.urlparse(endpoint)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                continue
             req = urllib.request.Request(
-                base + "/api/chat", data=payload,
+                endpoint, data=payload,
                 headers={"Content-Type": "application/json"}, method="POST",
             )
             with urllib.request.urlopen(req, timeout=45) as resp:
@@ -1748,11 +1753,23 @@ def human_size(num_bytes: int) -> str:
     return f"{size:.1f} GB"
 
 
-def child_environment() -> tuple[dict[str, str] | None, str | None]:
-    """Strip AppImage loader variables before launching Blender or external processes."""
-    if not sys.platform.startswith("linux") or not os.environ.get("APPIMAGE"):
-        return None, None
-    env = dict(os.environ)
+_ALLOWED_CHILD_ENV_KEYS = {
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL",
+    "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY",
+    "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP",
+    "XDG_DATA_DIRS", "XDG_CONFIG_DIRS", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+    "LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES", "TERM",
+    "SYSTEMROOT", "WINDIR", "PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP",
+}
+
+
+def child_environment() -> tuple[dict[str, str], str | None]:
+    """Construct a minimal, sanitized environment for child processes without leaking full os.environ."""
+    env: dict[str, str] = {}
+    for k in _ALLOWED_CHILD_ENV_KEYS:
+        val = os.environ.get(k)
+        if val is not None:
+            env[k] = val
     for var in ("APPIMAGE", "APPDIR", "LD_LIBRARY_PATH", "LD_PRELOAD", "UNION_PRELOAD"):
         env.pop(var, None)
     owd = os.environ.get("OWD") or ""
@@ -2097,8 +2114,6 @@ def spawn_blender_process(settings: dict[str, Any], blend_path: str = "", backgr
     args.extend(["--python", str(BOOTSTRAP_SCRIPT)])
 
     env, cwd = child_environment()
-    if env is None:
-        env = dict(os.environ)
     env["BLENDER_SERVER_PORT"] = str(settings["server_port"])
     env["BLENDER_SERVER_HOST"] = "0.0.0.0"
 
@@ -3323,6 +3338,26 @@ def _format_http_error(exc: urllib.error.HTTPError, model: str) -> str:
     return f"HTTP {exc.code} ({model}): {detail}"
 
 
+_ALLOWED_URL_SCHEMES = ("http", "https")
+
+
+def _validate_safe_url(url: str) -> str:
+    """Validate that an outbound network request targets an approved HTTP/HTTPS host."""
+    parsed = urllib.parse.urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(f"Restricted URL scheme '{parsed.scheme}': only HTTP and HTTPS are permitted")
+    if not parsed.netloc:
+        raise ValueError(f"Invalid network destination '{url}': host is required")
+    return url
+
+
+def _safe_urlopen(req: urllib.request.Request | str, timeout: float = 30.0):
+    url = req.full_url if isinstance(req, urllib.request.Request) else req
+    _validate_safe_url(url)
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
 def _call_openai_chat(
     endpoint: str,
     api_key: str,
@@ -3355,7 +3390,7 @@ def _call_openai_chat(
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _safe_urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         return ((data.get("choices") or [{}])[0].get("message") or {}).get("content", "")
     except urllib.error.HTTPError as exc:
@@ -3409,7 +3444,8 @@ def _pick_ollama_vision_fallback(settings: dict[str, Any]) -> str:
     for base_url in (settings["ollama_url"], settings["ollama_fallback_url"]):
         endpoint = base_url.rstrip("/") + "/api/tags"
         try:
-            with urllib.request.urlopen(urllib.request.Request(endpoint, method="GET"), timeout=3) as resp:
+            req = urllib.request.Request(endpoint, method="GET")
+            with _safe_urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             names = [str(m.get("name") or "") for m in (data.get("models") or []) if m.get("name")]
             if preferred in names:
@@ -3430,7 +3466,8 @@ def _pick_ollama_coder_model(settings: dict[str, Any], requested: str) -> str:
     for base_url in (settings["ollama_url"], settings["ollama_fallback_url"]):
         endpoint = base_url.rstrip("/") + "/api/tags"
         try:
-            with urllib.request.urlopen(urllib.request.Request(endpoint, method="GET"), timeout=3) as resp:
+            req = urllib.request.Request(endpoint, method="GET")
+            with _safe_urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             names = [str(m.get("name") or "") for m in (data.get("models") or []) if m.get("name")]
             for cand in ("qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-coder:32b"):
@@ -3474,7 +3511,7 @@ def _post_ollama_chat(
                 endpoint, data=payload,
                 headers={"Content-Type": "application/json"}, method="POST",
             )
-            with urllib.request.urlopen(req, timeout=180) as resp:
+            with _safe_urlopen(req, timeout=180) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             msg_obj = data.get("message") or {}
             return msg_obj.get("content") or msg_obj.get("thinking") or ""
@@ -4009,6 +4046,16 @@ PAGE = r"""<!doctype html>
     <div class="row" style="margin:6px 0 12px">
       <label class="chk"><input type="checkbox" id="cfg-single"> Load STLs into current OrcaSlicer window</label>
       <label class="chk"><input type="checkbox" id="cfg-autoplate"> Send to plate right after STL export</label>
+    </div>
+    <div class="field" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+      <label>Blender Bootstrap Script (Self-Contained)</label>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+        Connecting an existing Blender session or remote host? Copy the embedded server bootstrap script or export it to run inside Blender's Scripting workspace.
+      </div>
+      <div class="row" style="gap:8px">
+        <button class="sm" id="btn-copy-bootstrap" type="button">📋 Copy Bootstrap Script</button>
+        <button class="sm" id="btn-export-bootstrap" type="button">💾 Export server_bootstrap.py</button>
+      </div>
     </div>
     <div class="row">
       <div class="spacer"></div>
@@ -4578,10 +4625,46 @@ $('btn-new-create').onclick = () => {
   post({ command: 'new_project', name });
 };
 
+const _fallbackCopy = text => {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    setStatus('Bootstrap script copied to clipboard! Paste into Blender Scripting tab.', false);
+    log('Copied server_bootstrap.py to clipboard for manual Blender connection.', 'ok');
+  } catch (_) {
+    setStatus('Failed to copy to clipboard automatically.', true);
+  }
+  document.body.removeChild(ta);
+};
+
+$('btn-copy-bootstrap').onclick = () => {
+  post({ command: 'get_bootstrap_source' });
+};
+$('btn-export-bootstrap').onclick = () => {
+  post({ command: 'export_bootstrap' });
+};
+
 if (window.orca && window.orca.onMessage) {
   window.orca.onMessage(msg => {
     if (!msg) return;
     switch (msg.command) {
+      case 'bootstrap_source':
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(msg.code || '').then(() => {
+            setStatus('Bootstrap script copied to clipboard! Paste into Blender Scripting tab.', false);
+            log('Copied server_bootstrap.py to clipboard for manual Blender connection.', 'ok');
+          }).catch(() => {
+            _fallbackCopy(msg.code || '');
+          });
+        } else {
+          _fallbackCopy(msg.code || '');
+        }
+        break;
       case 'init_state':
         S.settings = msg.settings || {};
         $('projects-root').textContent = (msg.projects && msg.projects.root) || '';
@@ -4914,6 +4997,17 @@ class BlenderStudioPage(_PagesBase):
                 self._post({"command": "info", "text": note, "log": f"[Plate] {target} -> {note}"})
             elif cmd == "ai_prompt":
                 self._spawn(self._worker_ai_prompt, settings, msg)
+            elif cmd == "get_bootstrap_source":
+                self._post({"command": "bootstrap_source", "code": BOOTSTRAP_SOURCE})
+            elif cmd == "export_bootstrap":
+                ensure_studio_assets()
+                target_path = Path(settings["projects_dir"]) / "server_bootstrap.py"
+                target_path.write_text(BOOTSTRAP_SOURCE, encoding="utf-8")
+                self._post({
+                    "command": "info",
+                    "text": f"Exported bootstrap script to {target_path.name}",
+                    "log": f"[Bootstrap] Saved to {target_path}",
+                })
             elif cmd == "save_settings":
                 ok, clean = save_studio_settings(msg.get("settings") or {}, self)
                 self._post({"command": "settings_saved", "ok": ok, "settings": clean})
@@ -5238,25 +5332,60 @@ if orca is not None and hasattr(orca, "plugin") and hasattr(orca, "base"):
             if hasattr(orca, "request_permissions"):
                 try:
                     fs_read = [
+                        str(STUDIO_DIR),
+                        f"{STUDIO_DIR}/*",
                         str(DEFAULT_PROJECTS_DIR),
                         f"{DEFAULT_PROJECTS_DIR}/*",
                         str(Path.home() / "Blender"),
-                        str(Path.home() / "Blender" / "*"),
+                        f"{Path.home() / 'Blender'}/*",
+                        str(Path.home() / "Documents"),
+                        f"{Path.home() / 'Documents'}/*",
+                        tempfile.gettempdir(),
+                        f"{tempfile.gettempdir()}/*",
                     ]
-                    if os.path.isabs(DEFAULT_BLENDER_BIN):
+                    if DEFAULT_BLENDER_BIN and os.path.isabs(DEFAULT_BLENDER_BIN):
                         fs_read.append(str(Path(DEFAULT_BLENDER_BIN).parent / "*"))
-                    process_list = [DEFAULT_BLENDER_BIN] if DEFAULT_BLENDER_BIN else []
+
+                    fs_readwrite = [
+                        str(STUDIO_DIR),
+                        f"{STUDIO_DIR}/*",
+                        str(DEFAULT_PROJECTS_DIR),
+                        f"{DEFAULT_PROJECTS_DIR}/*",
+                        tempfile.gettempdir(),
+                        f"{tempfile.gettempdir()}/*",
+                    ]
+
+                    network_socket = [
+                        ("127.0.0.1", 9999),
+                        ("localhost", 9999),
+                        ("127.0.0.1", 11434),
+                        ("127.0.0.1", 11435),
+                    ]
+
+                    network_http = [
+                        "http://127.0.0.1:9999",
+                        "http://localhost:9999",
+                        "http://127.0.0.1:11434",
+                        "http://127.0.0.1:11435",
+                        "https://generativelanguage.googleapis.com",
+                        "https://api.openai.com",
+                    ]
+
+                    process_candidates = [
+                        DEFAULT_BLENDER_BIN,
+                        "blender",
+                        "gdbus",
+                        "xdg-open",
+                        "open",
+                        "cmd.exe",
+                    ]
+                    process_list = [p for p in process_candidates if p]
+
                     orca.request_permissions(
                         fs_read=fs_read,
-                        fs_readwrite=[str(DEFAULT_PROJECTS_DIR), f"{DEFAULT_PROJECTS_DIR}/*"],
-                        network=[
-                            "http://127.0.0.1:9999",
-                            "http://localhost:9999",
-                            "http://127.0.0.1:11435",
-                            "http://127.0.0.1:11434",
-                            "https://generativelanguage.googleapis.com",
-                            "https://api.openai.com",
-                        ],
+                        fs_readwrite=fs_readwrite,
+                        network_socket=network_socket,
+                        network_http=network_http,
                         process=process_list,
                         threading=True,
                     )
