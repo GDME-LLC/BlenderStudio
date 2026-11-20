@@ -1,5 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
+# dependencies = []
 #
 # [tool.orcaslicer.plugin]
 # name = "Blender Studio"
