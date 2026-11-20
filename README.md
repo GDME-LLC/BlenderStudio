@@ -11,6 +11,7 @@
 <p align="center">
   <a href="QUICK_REFERENCE.md">Quick Reference</a> &bull;
   <a href="USER_GUIDE.md">Full User Guide</a> &bull;
+  <a href="CHANGELOG.md">Changelog</a> &bull;
   <a href="standalone/server_bootstrap.py">Standalone Server</a> &bull;
   <a href="LICENSE">MIT License</a>
 </p>

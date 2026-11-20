@@ -73,9 +73,10 @@ jobs:
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: "Blender Studio ${{ steps.vars.outputs.tag }}"
+          body_path: dist/latest_changelog.md
           draft: ${{ github.event.inputs.draft || false }}
           prerelease: ${{ github.event.inputs.prerelease || false }}
-          generate_release_notes: true
+          generate_release_notes: false
           files: |
             dist/blender_studio_any.py
             dist/blender_studio_linux_x86_64.py
@@ -87,3 +88,4 @@ jobs:
             dist/icon.svg
             dist/blender_studio_v*.zip
             dist/SHA256SUMS.txt
+            dist/CHANGELOG.txt

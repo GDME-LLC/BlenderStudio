@@ -7,10 +7,13 @@ from pathlib import Path
 import py_compile
 import re
 import shutil
+import sys
 import zipfile
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from scripts.generate_changelog import generate_changelog
 SRC_PY = ROOT / "blender_studio.py"
 DIST_DIR = ROOT / "dist"
 ASSETS_DIR = ROOT / "assets"
@@ -152,6 +155,10 @@ def build() -> None:
     version = get_version()
     print(f"Building Blender Studio v{version} distribution...")
 
+    # 0. Synchronize changelog
+    generate_changelog()
+    print("  [OK] Synchronized CHANGELOG.md and dist/latest_changelog.md")
+
     # 1. Compile check source
     py_compile.compile(str(SRC_PY), doraise=True)
     print("  [OK] Syntax check passed on blender_studio.py")
@@ -181,7 +188,7 @@ def build() -> None:
         zf.write(DIST_DIR / "blender_studio_any.py", arcname="blender_studio_any.py")
         zf.write(DIST_DIR / "icon.png", arcname="icon.png")
         zf.write(DIST_DIR / "icon.svg", arcname="icon.svg")
-        for doc in ("README.md", "LICENSE", "QUICK_REFERENCE.md", "USER_GUIDE.md"):
+        for doc in ("README.md", "CHANGELOG.md", "LICENSE", "QUICK_REFERENCE.md", "USER_GUIDE.md"):
             p = ROOT / doc
             if p.is_file():
                 zf.write(p, arcname=doc)

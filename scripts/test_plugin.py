@@ -59,6 +59,16 @@ def test_dist_assets():
     print("✓ Distribution assets verified in dist/")
 
 
+def test_changelog():
+    changelog = ROOT / "CHANGELOG.md"
+    assert changelog.is_file(), "CHANGELOG.md is missing"
+    content = changelog.read_text(encoding="utf-8")
+    assert "## [1.2.5]" in content, "CHANGELOG.md missing current version entry ## [1.2.5]"
+    latest = ROOT / "dist" / "latest_changelog.md"
+    assert latest.is_file(), "dist/latest_changelog.md is missing"
+    print("✓ CHANGELOG.md and dist/latest_changelog.md verified")
+
+
 def main():
     print(f"Running Blender Studio tests against {SRC_PY.name}...")
     test_syntax()
@@ -66,6 +76,7 @@ def main():
     test_ast_classes()
     test_settings_structure()
     test_dist_assets()
+    test_changelog()
     print("All tests passed successfully!")
 
 

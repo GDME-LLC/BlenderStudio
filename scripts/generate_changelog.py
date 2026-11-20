@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Automatically generate and synchronize CHANGELOG.md and release notes."""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import re
+import subprocess
+
+ROOT = Path(__file__).resolve().parent.parent
+CHANGELOG_MD = ROOT / "CHANGELOG.md"
+DIST_DIR = ROOT / "dist"
+SRC_PY = ROOT / "blender_studio.py"
+
+# Curated release history with detailed categorization
+RELEASE_HISTORY: dict[str, dict[str, Any]] = {
+    "1.2.5": {
+        "date": "2026-11-20",
+        "title": "Orca Cloud Plugin Hub Certification & Upfront Security Permissions",
+        "features": [
+            "Declared upfront capabilities via `orca.request_permissions(...)` for a single combined approval dialog on load (`network_socket`, `network_http`, `fs_read`, `fs_readwrite`, `process`, `threading`).",
+            "100% Self-Contained Plugin Hub installation: Added **📋 Copy Bootstrap Script** and **💾 Export server_bootstrap.py** buttons inside Settings modal.",
+            "Automated GitHub Actions release pipeline triggering on push to `main` with multi-OS distribution assets.",
+            "Automatic Changelog generation integrated into build and release pipelines.",
+        ],
+        "fixes": [
+            "Sanitized child process environments with `_ALLOWED_CHILD_ENV_KEYS`, eliminating sensitive `os.environ` credential leakage.",
+            "Hardened outbound network requests with `_validate_safe_url` and `_safe_urlopen` restricting calls strictly to HTTP/HTTPS schemes with host validation.",
+            "Resolved duplicate target conflict in Orca Cloud Plugin Hub releases.",
+        ],
+    },
+    "1.2.4": {
+        "date": "2026-11-18",
+        "title": "Procedural CAD Helpers, CAD Reference Attachments, & Geometry Audit",
+        "features": [
+            "Parametric procedural CAD helper library (`cad.*`): `box`, `rounded_plate`, `cylinder`, `tube`, `strut`, `oriented_box`, `counterbore_hole`, `slot`, `magnet_pocket`, `m3_hole`, `place_on_bed`, and `audit_geometry`.",
+            "Multi-format CAD attachments: Attach `.step`, `.stp`, `.3mf`, and `.stl` files in the AI CAD Assistant via `+ File / CAD`, drag-and-drop, or clipboard.",
+            "Closed-loop geometry audit: Automatically inspects manifold status, isolated vertices/edges, scale normalization, and bed clearance with AI self-healing.",
+            "Multi-resolution official icons (512, 256, 128, 64, 32) and target-OS suffixed release packages (`_any`, `_linux_x86_64`, `_win_x86_64`, `_macosx_arm64`, `_macosx_x86_64`).",
+        ],
+        "fixes": [
+            "Thread-capped local Ollama inference (`num_thread: 4`) to prevent CPU fan noise and system freezes.",
+            "Animated progress wheel and pulse bar on AI generation to provide instant visual feedback.",
+        ],
+    },
+    "1.2.3": {
+        "date": "2026-11-18",
+        "title": "Google Gemini 3.x Migration & High-Performance Fallbacks",
+        "features": [
+            "Integrated Gemini 3.x Flash (`gemini-3-flash-preview`, `gemini-3.8-flash-preview`) with automatic failover across candidate models.",
+        ],
+        "fixes": [
+            "Replaced retired Gemini 2.5 preview endpoints with current Google AI catalog.",
+        ],
+    },
+    "1.2.2": {
+        "date": "2026-11-18",
+        "title": "Two-Stage Ollama Vision Pipeline & Server Self-Healing",
+        "features": [
+            "Two-stage local Ollama architecture: Vision model (`qwen3.5-9b-abliterated-vision`) analyzes reference images/CAD; Coder model (`qwen2.5-coder:7b`) generates clean `bpy` code.",
+            "Built-in server self-healing: Automatically diagnoses and fixes `bpy` script exceptions before reporting to the user.",
+        ],
+    },
+    "1.2.1": {
+        "date": "2026-11-18",
+        "title": "Blender 5.2 LTS Shims & Expanded Geometry Support",
+        "features": [
+            "Added API compatibility shims for Blender 5.2 LTS and 4.2+ LTS releases.",
+            "Added bounding box and clearance inspection for FONT and CURVE geometry types.",
+        ],
+        "fixes": [
+            "Eliminated UI thread blocking during scene audits and enhanced Ollama query throughput.",
+        ],
+    },
+    "1.2.0": {
+        "date": "2026-11-18",
+        "title": "Multi-Modal AI CAD Assistant",
+        "features": [
+            "Added image, diagram, and specification document attachment support directly inside the AI CAD assistant prompt box.",
+        ],
+    },
+    "1.1.0": {
+        "date": "2026-11-18",
+        "title": "Initial Release of Blender Studio for OrcaSlicer",
+        "features": [
+            "Integrated top-bar OrcaSlicer Pages plugin connecting to Blender via TCP :9999.",
+            "Interactive CAD inspection separating printable parts from hardware mockups (`M_*`).",
+            "Multi-angle diagnostic EEVEE render studio (Hero, Top, Front, Isometric, Exploded).",
+            "One-click binary STL export and direct build plate handoff via D-Bus, Windows WM_COPYDATA, and macOS open.",
+        ],
+    },
+}
+
+
+def get_current_version() -> str:
+    content = SRC_PY.read_text(encoding="utf-8")
+    m = re.search(r'PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']', content)
+    return m.group(1) if m else "1.2.5"
+
+
+def format_release_markdown(ver: str, info: dict[str, Any]) -> str:
+    lines = [f"## [{ver}] - {info.get('date', 'Unknown Date')}"]
+    if info.get("title"):
+        lines.append(f"### {info['title']}\n")
+    if info.get("features"):
+        lines.append("#### Added & Enhanced")
+        for item in info["features"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    if info.get("fixes"):
+        lines.append("#### Fixed & Security")
+        for item in info["fixes"]:
+            lines.append(f"- {item}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def generate_changelog() -> tuple[str, str]:
+    """Generate the full CHANGELOG.md and extract the latest version notes."""
+    cur_ver = get_current_version()
+    lines = [
+        "# Changelog",
+        "",
+        "All notable changes to the **Blender Studio** plugin for OrcaSlicer are documented in this file.",
+        "",
+        "The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),",
+        "and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).",
+        "",
+        "---",
+        "",
+    ]
+
+    latest_notes = ""
+    for ver, info in RELEASE_HISTORY.items():
+        rel_md = format_release_markdown(ver, info)
+        if ver == cur_ver or not latest_notes:
+            latest_notes = rel_md
+        lines.append(rel_md)
+
+    full_md = "\n".join(lines)
+    CHANGELOG_MD.write_text(full_md, encoding="utf-8")
+
+    DIST_DIR.mkdir(parents=True, exist_ok=True)
+    (DIST_DIR / "latest_changelog.md").write_text(latest_notes, encoding="utf-8")
+    (DIST_DIR / "CHANGELOG.txt").write_text(full_md, encoding="utf-8")
+
+    return full_md, latest_notes
+
+
+if __name__ == "__main__":
+    _, latest = generate_changelog()
+    print("✓ Successfully generated CHANGELOG.md and dist/latest_changelog.md")
+    print(f"\n--- Latest Release Notes (v{get_current_version()}) ---")
+    print(latest)
