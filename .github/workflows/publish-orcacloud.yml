@@ -1,0 +1,70 @@
+name: Publish to OrcaCloud
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PLUGIN_FILES: "dist/blender_studio_any.py"
+
+jobs:
+  publish:
+    name: Publish to Orca Cloud
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pillow
+
+      - name: Build distribution packages
+        run: python scripts/build_dist.py
+
+      - name: Run validation tests
+        run: python scripts/test_plugin.py
+
+      - name: Publish release to OrcaCloud
+        run: |
+          set -euo pipefail
+          echo "Requesting OIDC token for Orca Cloud..."
+          oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=orcacloud" | jq -r .value)"
+          
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            raw_tag="${{ github.event.release.tag_name }}"
+            version="${raw_tag#v}"
+          else
+            version="$(python3 scripts/generate_changelog.py --version-only)"
+          fi
+
+          if [ -f "dist/latest_changelog.md" ]; then
+            changelog="$(cat dist/latest_changelog.md)"
+          else
+            changelog="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH")"
+          fi
+          
+          echo "Publishing Blender Studio v${version} to Orca Cloud..."
+          for file in $PLUGIN_FILES; do
+            echo "Uploading $file (target: any, version: $version)..."
+            response=$(curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -X POST "https://api.orcaslicer.com/api/v1/plugin-publish/releases" \
+              -H "Authorization: Bearer $oidc_token" \
+              -F "version=$version" \
+              -F "changelog=$changelog" \
+              -F "file=@$file")
+            echo "$response"
+          done
