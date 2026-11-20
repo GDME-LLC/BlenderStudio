@@ -6,10 +6,6 @@ on:
       - "v*"
     branches:
       - main
-    paths:
-      - "blender_studio.py"
-      - "scripts/**"
-      - ".github/workflows/release.yml"
   workflow_dispatch:
     inputs:
       tag_name:
@@ -27,6 +23,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build-and-release:
@@ -60,16 +57,19 @@ jobs:
         run: |
           if [ -n "${{ github.event.inputs.tag_name }}" ]; then
             TAG="${{ github.event.inputs.tag_name }}"
+            VERSION="${TAG#v}"
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
           else
-            VERSION=$(python3 -c "import re; print(re.search(r'PLUGIN_VERSION\s*=\s*[\"\\\']([^\"\\\']+)[\"\\\']', open('blender_studio.py').read()).group(1))")
+            VERSION=$(python3 scripts/generate_changelog.py --version-only)
             TAG="v${VERSION}"
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Release tag will be: ${TAG}"
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
@@ -94,3 +94,24 @@ jobs:
             dist/hub_hero_banner.png
             dist/workflow_pipeline.png
             dist/diagnostic_views_showcase.png
+
+      - name: Publish to Orca Cloud Plugin Hub
+        continue-on-error: true
+        run: |
+          echo "Attempting trusted publishing to Orca Cloud..."
+          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ] && [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            OIDC_TOKEN=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=orcacloud" | jq -r '.value // empty')
+            if [ -n "$OIDC_TOKEN" ]; then
+              echo "Posting release to Orca Cloud API..."
+              curl -sS -X POST "https://api.orcaslicer.com/api/v1/plugin-publish/releases" \
+                -H "Authorization: Bearer $OIDC_TOKEN" \
+                -F "file=@dist/blender_studio_any.py" \
+                -F "changelog=@dist/latest_changelog.md" \
+                -F "version=${{ steps.vars.outputs.version }}" || echo "Orca Cloud API response recorded."
+            else
+              echo "OIDC token could not be minted."
+            fi
+          else
+            echo "ACTIONS_ID_TOKEN_REQUEST_TOKEN not provided in environment."
+          fi

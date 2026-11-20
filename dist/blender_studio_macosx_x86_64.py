@@ -5414,11 +5414,15 @@ if orca is not None and hasattr(orca, "plugin") and hasattr(orca, "base"):
                         f"{tempfile.gettempdir()}/*",
                     ]
 
+                    network_socket_raw = [
+                        "127.0.0.1:9999",
+                        "localhost:9999",
+                        "127.0.0.1:11434",
+                        "127.0.0.1:11435",
+                    ]
                     network_socket = [
-                        ("127.0.0.1", 9999),
-                        ("localhost", 9999),
-                        ("127.0.0.1", 11434),
-                        ("127.0.0.1", 11435),
+                        f"{s[0]}:{s[1]}" if isinstance(s, (list, tuple)) and len(s) == 2 else str(s)
+                        for s in network_socket_raw
                     ]
 
                     network_http = [

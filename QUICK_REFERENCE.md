@@ -132,3 +132,10 @@ Every packet uses a **4-byte big-endian unsigned integer length header** followe
 }
 ```
 Set `__file_data__ = <json-serializable>` inside your script to return structured data, or `__stop_server__ = True` to shut down the server.
+
+---
+
+## 9. License
+Released under the [PolyForm Shield License 1.0.0](LICENSE) — Copyright (c) 2026 Gabrial McCauley (GDME LLC). Commercial licensing inquiries: Gabrial@gdmellccom.com.
+`standalone/server_bootstrap.py` is licensed under GNU GPL v3.0 (`GPL-3.0-or-later`) for Blender `bpy` compatibility.
+

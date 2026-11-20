@@ -174,3 +174,10 @@ Because `server_bootstrap.py` binds to `0.0.0.0:9999`, you can run Blender on a 
   - Use `qwen2.5-coder:7b` for code generation, and enable Flash Attention (`OLLAMA_FLASH_ATTENTION=1`) when running vision models alongside OrcaSlicer's 3D viewport.
 - **OrcaSlicer prompts for permissions or blocks a path:**
   - On first use of a new external folder or remote IP, OrcaSlicer asks you to approve the grant. Never store plugin scratch files in folders named `config` or `secret` — OrcaSlicer's Python audit hook blocks those path keywords by design.
+
+---
+
+## 10. License
+Released under the [PolyForm Shield License 1.0.0](LICENSE) — Copyright (c) 2026 Gabrial McCauley (GDME LLC). Commercial licensing inquiries: Gabrial@gdmellccom.com.
+`standalone/server_bootstrap.py` is licensed under GNU GPL v3.0 (`GPL-3.0-or-later`) for Blender `bpy` compatibility.
+
