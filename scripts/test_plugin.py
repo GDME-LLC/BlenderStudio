@@ -24,7 +24,7 @@ def test_pep723_metadata():
     assert m_name and m_name.group(1) == "Blender Studio", f"Invalid plugin name: {m_name}"
 
     m_ver = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
-    assert m_ver and m_ver.group(1) == "1.2.4", f"Invalid version in header: {m_ver}"
+    assert m_ver and m_ver.group(1) == "1.2.5", f"Invalid version in header: {m_ver}"
 
     m_const = re.search(r'PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']', content)
     assert m_const and m_const.group(1) == m_ver.group(1), "Version mismatch between header and PLUGIN_VERSION"

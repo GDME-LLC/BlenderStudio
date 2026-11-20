@@ -4,10 +4,15 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - main
+    paths:
+      - "blender_studio.py"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
     inputs:
       tag_name:
-        description: "Release tag (e.g. v1.2.4)"
+        description: "Release tag (e.g. v1.2.5)"
         required: false
         default: ""
       draft:

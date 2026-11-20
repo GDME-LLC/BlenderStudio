@@ -6,7 +6,7 @@
 # name = "Blender Studio"
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
-# version = "1.2.4"
+# version = "1.2.5"
 # license = "MIT"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
@@ -56,7 +56,7 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Paths & Cross-Platform Auto-Discovery (avoid audit keywords: conf/config/secret)
 # --------------------------------------------------------------------------- #
-PLUGIN_VERSION = "1.2.4"
+PLUGIN_VERSION = "1.2.5"
 PLUGIN_DIR = Path(__file__).resolve().parent
 
 
