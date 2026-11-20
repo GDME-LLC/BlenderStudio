@@ -7,7 +7,7 @@
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
 # version = "1.2.5"
-# license = "MIT"
+# license = "PolyForm-Shield-1.0.0"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
 
