@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Gabrial McCauley (GDME LLC)
+# SPDX-License-Identifier: GPL-3.0-or-later (for Blender bpy compatibility)
 """Dual-mode Blender TCP socket server bootstrap (GUI timer + headless daemon + cad helper)."""
 import base64
 import io
