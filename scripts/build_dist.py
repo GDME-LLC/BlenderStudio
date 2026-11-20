@@ -25,7 +25,7 @@ def get_version() -> str:
     m = re.search(r'PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']', content)
     if m:
         return m.group(1)
-    return "1.2.5"
+    return "1.2.6"
 
 
 def render_icons() -> None:

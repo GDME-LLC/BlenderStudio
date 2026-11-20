@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import re
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
 DIST = ROOT / "dist"
+SRC_PY = ROOT / "blender_studio.py"
 
 FONT_BOLD = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 FONT_REG = "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+
+
+def get_current_version() -> str:
+    content = SRC_PY.read_text(encoding="utf-8")
+    m = re.search(r'PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']', content)
+    return m.group(1) if m else "1.2.6"
 
 
 def get_font(path: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -60,8 +68,9 @@ def create_hub_hero_banner() -> None:
     draw.text((222, 122), "Live Procedural CAD & Diagnostic EEVEE Studio for OrcaSlicer", font=f_sub, fill=(0, 210, 190, 255))
 
     # Compatibility tag
+    ver_str = get_current_version()
     draw.rounded_rectangle([222, 160, 480, 190], radius=15, fill=(30, 36, 48, 200), outline=(0, 174, 157, 120), width=1)
-    draw.text((236, 166), "Official Community Plugin  v1.2.5", font=f_badge, fill=(167, 243, 208, 255))
+    draw.text((236, 166), f"Official Community Plugin  v{ver_str}", font=f_badge, fill=(167, 243, 208, 255))
 
     # Feature Bullet Chips (left column)
     chips = [

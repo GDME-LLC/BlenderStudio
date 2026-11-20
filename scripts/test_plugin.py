@@ -24,11 +24,18 @@ def test_pep723_metadata():
     assert m_name and m_name.group(1) == "Blender Studio", f"Invalid plugin name: {m_name}"
 
     m_ver = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
-    assert m_ver and m_ver.group(1) == "1.2.5", f"Invalid version in header: {m_ver}"
+    assert m_ver, "Missing version field in PEP 723 header"
+    ver_str = m_ver.group(1)
+    assert re.match(r'^\d+\.\d+\.\d+$', ver_str), f"PEP 723 version '{ver_str}' is not valid semver (\\d+\\.\\d+\\.\\d+)"
 
     m_const = re.search(r'PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']', content)
-    assert m_const and m_const.group(1) == m_ver.group(1), "Version mismatch between header and PLUGIN_VERSION"
-    print(f"✓ PEP 723 metadata verified (v{m_ver.group(1)})")
+    assert m_const, "Missing PLUGIN_VERSION constant in blender_studio.py"
+    assert m_const.group(1) == ver_str, f"Version mismatch: PEP 723 header is '{ver_str}' but PLUGIN_VERSION is '{m_const.group(1)}'"
+
+    m_lic = re.search(r'license\s*=\s*["\']([^"\']+)["\']', content)
+    assert m_lic and m_lic.group(1) == "PolyForm-Shield-1.0.0", f"Invalid license in header: {m_lic}"
+
+    print(f"✓ PEP 723 metadata verified (v{ver_str}, license: {m_lic.group(1)})")
 
 
 def test_ast_classes():
@@ -63,13 +70,17 @@ def test_dist_assets():
 
 
 def test_changelog():
+    content_py = SRC_PY.read_text(encoding="utf-8")
+    m_ver = re.search(r'PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']', content_py)
+    cur_ver = m_ver.group(1) if m_ver else "1.2.6"
+
     changelog = ROOT / "CHANGELOG.md"
     assert changelog.is_file(), "CHANGELOG.md is missing"
     content = changelog.read_text(encoding="utf-8")
-    assert "## [1.2.5]" in content, "CHANGELOG.md missing current version entry ## [1.2.5]"
+    assert f"## [{cur_ver}]" in content, f"CHANGELOG.md missing current version entry ## [{cur_ver}]"
     latest = ROOT / "dist" / "latest_changelog.md"
     assert latest.is_file(), "dist/latest_changelog.md is missing"
-    print("✓ CHANGELOG.md and dist/latest_changelog.md verified")
+    print(f"✓ CHANGELOG.md and dist/latest_changelog.md verified (v{cur_ver})")
 
 
 def main():

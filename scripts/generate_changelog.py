@@ -14,6 +14,18 @@ SRC_PY = ROOT / "blender_studio.py"
 
 # Curated release history with detailed categorization
 RELEASE_HISTORY: dict[str, dict[str, Any]] = {
+    "1.2.6": {
+        "date": "2026-11-20",
+        "title": "PolyForm Shield License 1.0.0 & Dynamic Metadata Validation",
+        "features": [
+            "Licensed under PolyForm Shield License 1.0.0 to protect against competitive commercial misuse while keeping full free use for users.",
+            "Dedicated GNU GPL v3.0 (`GPL-3.0-or-later`) license for `standalone/server_bootstrap.py` for Blender `bpy` compatibility.",
+            "Updated PEP 723 metadata with `PolyForm-Shield-1.0.0` license identifier and dynamic semver validation.",
+        ],
+        "fixes": [
+            "Replaced hardcoded version test assertions with dynamic semver and consistency verification.",
+        ],
+    },
     "1.2.5": {
         "date": "2026-11-20",
         "title": "Orca Cloud Plugin Hub Certification & Upfront Security Permissions",
@@ -95,7 +107,7 @@ RELEASE_HISTORY: dict[str, dict[str, Any]] = {
 def get_current_version() -> str:
     content = SRC_PY.read_text(encoding="utf-8")
     m = re.search(r'PLUGIN_VERSION\s*=\s*["\']([^"\']+)["\']', content)
-    return m.group(1) if m else "1.2.5"
+    return m.group(1) if m else "1.2.6"
 
 
 def format_release_markdown(ver: str, info: dict[str, Any]) -> str:

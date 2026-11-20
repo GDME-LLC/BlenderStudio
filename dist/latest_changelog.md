@@ -1,13 +1,10 @@
-## [1.2.5] - 2026-11-20
-### Orca Cloud Plugin Hub Certification & Upfront Security Permissions
+## [1.2.6] - 2026-11-20
+### PolyForm Shield License 1.0.0 & Dynamic Metadata Validation
 
 #### Added & Enhanced
-- Declared upfront capabilities via `orca.request_permissions(...)` for a single combined approval dialog on load (`network_socket`, `network_http`, `fs_read`, `fs_readwrite`, `process`, `threading`).
-- 100% Self-Contained Plugin Hub installation: Added **📋 Copy Bootstrap Script** and **💾 Export server_bootstrap.py** buttons inside Settings modal.
-- Automated GitHub Actions release pipeline triggering on push to `main` with multi-OS distribution assets.
-- Automatic Changelog generation integrated into build and release pipelines.
+- Licensed under PolyForm Shield License 1.0.0 to protect against competitive commercial misuse while keeping full free use for users.
+- Dedicated GNU GPL v3.0 (`GPL-3.0-or-later`) license for `standalone/server_bootstrap.py` for Blender `bpy` compatibility.
+- Updated PEP 723 metadata with `PolyForm-Shield-1.0.0` license identifier and dynamic semver validation.
 
 #### Fixed & Security
-- Sanitized child process environments with `_ALLOWED_CHILD_ENV_KEYS`, eliminating sensitive `os.environ` credential leakage.
-- Hardened outbound network requests with `_validate_safe_url` and `_safe_urlopen` restricting calls strictly to HTTP/HTTPS schemes with host validation.
-- Resolved duplicate target conflict in Orca Cloud Plugin Hub releases.
+- Replaced hardcoded version test assertions with dynamic semver and consistency verification.

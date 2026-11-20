@@ -6,8 +6,8 @@
 # name = "Blender Studio"
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
-# version = "1.2.5"
-# license = "MIT"
+# version = "1.2.6"
+# license = "PolyForm-Shield-1.0.0"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
 
@@ -56,7 +56,7 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Paths & Cross-Platform Auto-Discovery (avoid audit keywords: conf/config/secret)
 # --------------------------------------------------------------------------- #
-PLUGIN_VERSION = "1.2.5"
+PLUGIN_VERSION = "1.2.6"
 PLUGIN_DIR = Path(__file__).resolve().parent
 
 
@@ -173,7 +173,9 @@ TAB_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" wi
 </svg>
 """
 
-BOOTSTRAP_SOURCE = r'''"""Dual-mode Blender TCP socket server bootstrap (GUI timer + headless daemon + cad helper)."""
+BOOTSTRAP_SOURCE = r'''# Copyright (c) 2026 Gabrial McCauley (GDME LLC)
+# SPDX-License-Identifier: GPL-3.0-or-later (for Blender bpy compatibility)
+"""Dual-mode Blender TCP socket server bootstrap (GUI timer + headless daemon + cad helper)."""
 import base64
 import io
 import json
