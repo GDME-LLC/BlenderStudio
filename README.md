@@ -18,7 +18,7 @@
 
 ---
 
-**Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.2.6`) compatible with OrcaSlicer v2.5.0 and v2.5.1+ that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with the built-in `cad` helper or `bpy` (or a local Ollama two-stage Vision + Coder / Gemini 3.8 Flash AI assistant with reference CAD files, images & spec documents), inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
+**Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.2.7`) compatible with OrcaSlicer v2.5.0 and v2.5.1+ that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with the built-in `cad` helper or `bpy` (or a local Ollama two-stage Vision + Coder / Gemini 3.8 Flash AI assistant with reference CAD files, images & spec documents), cut and separate models into multi-plate parts with watertight manifold capping, inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
 
 <p align="center">
   <img src="assets/diagnostic_views_showcase.png" alt="Diagnostic Views Showcase" width="100%">
@@ -41,6 +41,22 @@
 | **Procedural CAD Helpers (`cad.*`)** | High-level parametric primitives: `cad.box`, `cad.rounded_plate`, `cad.cylinder`, `cad.tube`, `cad.cut_parts` (bisect into watertight plate parts), `cad.separate_loose` (split disjoint shells), `cad.strut` (with flat-bottom FDM support), `cad.oriented_box` (local pocket/aperture cuts before aiming), `cad.counterbore_hole`, `cad.slot`, `cad.magnet_pocket`, `cad.m3_hole`, `cad.place_on_bed`, and `cad.audit_geometry`. |
 | **Built-in 3D Printing Macros & Cut Modal** | One-click macros for **Interactive ✂ Cut & Separate Modal** (Z/X/Y planar slice, watertight manifold capping, Z-floor bed grounding & part spacing), **3-Point Studio Rig**, **6×2 mm Magnet Pocket Mockup** (`Ø6.25 × 2.20 mm`), **M3 Boss & Captive Nut**, **SG90 Servo Mockup**, and **Manifold / Scale / Z-Floor Audit**. |
 | **Cross-Platform Send to Plate** | Exports binary STL via `wm.stl_export` (`1 BU = 1 mm`) and delivers it straight onto the active **Prepare** build plate via Linux D-Bus (`AnotherInstance`), Windows `WM_COPYDATA`, or macOS single-instance handoff. |
+
+---
+
+## ✂ Model Cutting & Multi-Plate Part Separation (v1.2.7)
+
+Preparing large models or complex multi-body assemblies for printing often requires splitting them into smaller pieces or separating disjoint bodies to place on separate build plates. Blender Studio v1.2.7 introduces a dedicated, zero-friction cutting workflow:
+
+- **Interactive `✂ Cut` Modal:** Click **`✂ Cut`** next to any printable CAD mesh in the left sidebar to open the configuration dialog.
+- **Dual Operation Modes:**
+  - **Planar Slice (Bisect):** Choose any cut axis (**Z** [horizontal / layer height], **X** [lateral / width], or **Y** [depth]), set the cut position with an interactive ratio slider (10% to 90%) and fine-tune with millimeter offsets.
+  - **Separate Loose Shells:** Automatically detect and separate disconnected bodies/shells inside multi-body STLs into individual, independent mesh objects.
+- **Watertight Manifold Capping:** Dual-pass bisecting with automated hole filling (`bmesh.ops.holes_fill`) and face normal recalculation guarantees **0 non-manifold edges** on all cut halves.
+- **Automatic Z-Floor Grounding (`Z=0`):** Both cut halves are automatically grounded flat onto the build plate surface (`min_Z = 0.0 mm`), eliminating floating overhangs.
+- **Collision-Free Part Spacing:** Automatically separates the resulting parts along the X axis (configurable, default `25.0 mm`) so you can inspect them immediately side-by-side and send each part to separate plates.
+- **Direct Execution or Script Inspection:** Click **`✂ Cut & Separate`** to execute immediately, or **`📝 To Editor`** to inspect and customize the generated Python script before running.
+- **Procedural CAD Helpers:** Available in Python via `cad.cut_parts(target, axis="Z", ratio=0.5, offset=0.0, align_to_bed=True, spacing=20.0)` and `cad.separate_loose(target, align_to_bed=True, spacing=20.0)`.
 
 ---
 
