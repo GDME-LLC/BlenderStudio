@@ -105,14 +105,18 @@ The right column acts as a live Python REPL attached to Blender's main thread. P
 
 Every AI prompt automatically includes a structured summary of your active scene (`.blend` filename, Blender version, every printable mesh's exact `X × Y × Z mm` dimensions and world bounding box, plus all hardware mockups) so the LLM writes targeted `bpy` code.
 
-### Supported Backends
-1. **Local Ollama (Private & Free):**
-   - Select `Ollama: qwen2.5-coder:7b` for fast `bpy` generation, or `Ollama: qwen3.5-9b-vision` when attaching a viewport render.
+### Supported Backends & Model Freedom
+Blender Studio never restricts you to hardcoded models. You can test and design with any model you prefer:
+1. **Local Ollama (Private, Free & Auto-Detected):**
+   - Blender Studio dynamically inspects local Ollama (`/api/tags`) and automatically populates the dropdown with **all** models installed on your machine (`qwen2.5-coder`, `deepseek-coder`, `llama3`, `dolphin-mistral`, `moondream`, etc.).
    - Configure primary/fallback URLs in **Settings** (defaults to `http://127.0.0.1:11435` and `http://127.0.0.1:11434`).
+   - Click **`🔄 Detect Installed Ollama`** to scan for newly pulled models at any time.
 2. **Google Gemini:**
-   - Open **Settings** &rarr; paste your **Gemini API Key** &rarr; choose `Gemini 3 Flash (Fast)`, `Gemini 3.5 Flash-Lite`, `Gemini 3.5 Flash`, `Gemini 3.6 Flash`, `Gemini 3.8 Flash`, or `Gemini 3.1 Flash-Lite` (with automatic failover if a model experiences demand spikes or is deprecated).
+   - Open **Settings** &rarr; paste your **Gemini API Key** &rarr; choose from current presets (`Gemini 3.8 Flash`, `Gemini 3 Flash`, `Gemini 3.5 Flash`, `Gemini 3.5 Flash-Lite`, `Gemini 3.1 Flash-Lite`) or click **`+ Model`** to test any experimental or preview Gemini model (e.g. `gemini-2.0-flash-exp`).
 3. **OpenAI-Compatible (OpenAI, OpenRouter, LM Studio, DeepSeek, vLLM):**
-   - Open **Settings** &rarr; configure **OpenAI-Compatible Base URL** (e.g., `http://127.0.0.1:1234/v1` for LM Studio or `https://openrouter.ai/api/v1`), **Model**, and **API Key** &rarr; pick `OpenAI-Compatible (Settings)` in the dropdown.
+   - Open **Settings** &rarr; configure **OpenAI-Compatible Base URL** (e.g., `http://127.0.0.1:1234/v1` for LM Studio or `https://openrouter.ai/api/v1`), **Model**, and **API Key**.
+4. **On-the-Fly `+ Model` Dialog:**
+   - Click the **`+ Model`** button next to the model dropdown or pick **`➕ Add / Try New Model...`** to add any local or cloud model. Custom models are saved directly to settings and persist across sessions.
 
 ### Attaching Pictures & Reference Documents
 Beyond live scene geometry, you can supply rich multi-modal context directly to the AI CAD Assistant using three equivalent methods:

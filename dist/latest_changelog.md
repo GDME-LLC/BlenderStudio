@@ -1,12 +1,12 @@
-## [1.2.7] - 2026-11-21
-### Interactive Model Cutting & Multi-Plate Part Separation (✂ Cut Macro & Modal)
+## [1.2.8] - 2026-11-21
+### Dynamic AI Model Discovery & Custom Model Manager (Ollama, Gemini, OpenAI)
 
 #### Added & Enhanced
-- Interactive Cut & Separate Modal (`✂ Cut`): Effortlessly split complex 3D models into watertight pieces or separate loose disconnected shells for independent build plates directly from the mesh sidebar.
-- Watertight Manifold Bisect & Capping: Advanced planar bisecting with automated hole filling, face normal recalculation, and guaranteed 0 non-manifold edges.
-- Automatic Z-Floor Grounding & Part Spacing: Automatically aligns cut parts flat against the build bed (Z=0) with configurable spacing (default 25mm) for instant collision-free multi-plate slicing.
-- Built-in `✂ Cut` Macro (`cut_split`): Instant macro button in the bpy script bar with fallback execution directly in Blender Python editor.
-- Procedural CAD Helpers: Added `cad.cut_parts(...)` and `cad.separate_loose(...)` to the embedded `cad` library and exposed `bpy.cad`.
+- Dynamic Local Ollama Model Discovery: Automatically queries local Ollama (`/api/tags`) and lists all installed models (`qwen2.5-coder`, `deepseek-coder`, `llama3`, `dolphin-mistral`, `moondream`, etc.) in the AI CAD dropdown.
+- Interactive `+ Model` & `➕ Add / Try New Model` Dialog: Add any custom local or cloud model on the fly across Local Ollama, Google Gemini, or OpenAI-compatible endpoints (LM Studio, OpenRouter, DeepSeek, vLLM).
+- Persistent Custom Models: Custom models are saved directly to settings and persist across OrcaSlicer sessions with friendly labels.
+- Custom Models Manager in Settings: View, organize, and remove experimental custom models in a dedicated settings panel.
+- Arbitrary OpenAI & Gemini Model Routing: Ensured custom model identifiers selected in the dropdown pass through directly to OpenAI/Gemini chat endpoints without preset restrictions.
 
 #### Fixed & Security
-- Ensured full coordinate transform application (`location=True, rotation=True, scale=True`) prior to bisecting to guarantee 100% accurate planar positioning.
+- Fixed model override precedence in OpenAI chat caller so user-selected custom models take precedence over default settings.

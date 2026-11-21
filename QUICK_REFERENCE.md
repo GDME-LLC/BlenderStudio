@@ -138,6 +138,15 @@ Set `__file_data__ = <json-serializable>` inside your script to return structure
 
 ---
 
+## 8. AI Models & Custom LLMs
+
+- **No Model Restrictions:** Use any local Ollama model, Google Gemini model, or OpenAI-compatible endpoint.
+- **Dynamic Local Ollama Discovery:** Queries `/api/tags` on start; automatically lists all installed models (`qwen2.5-coder`, `deepseek-coder`, `llama3`, `dolphin-mistral`, `moondream`, etc.).
+- **`+ Model` Button:** Add any experimental model on the fly across Ollama, Gemini, or OpenAI-compatible (OpenRouter, LM Studio, DeepSeek). Custom models persist across sessions.
+- **Settings & Management:** View and remove custom test models in **Settings (⚙)** under *Custom & Experimental AI Models*.
+
+---
+
 ## 9. License
 Released under the [PolyForm Shield License 1.0.0](LICENSE) — Copyright (c) 2026 Gabrial McCauley (GDME LLC). Commercial licensing inquiries: Gabrial@gdmellccom.com.
 `standalone/server_bootstrap.py` is licensed under GNU GPL v3.0 (`GPL-3.0-or-later`) for Blender `bpy` compatibility.

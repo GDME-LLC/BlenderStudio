@@ -1,4 +1,4 @@
-# Blender Studio for OrcaSlicer (v1.2.7)
+# Blender Studio for OrcaSlicer (v1.2.8)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/GDME-LLC/BlenderStudio/main/assets/hub_hero_banner.png" alt="Blender Studio for OrcaSlicer" width="100%">
@@ -18,9 +18,22 @@
 
 ---
 
+## 🤖 What's New in v1.2.8: Dynamic AI Model Discovery & Custom Models
+
+You are never locked into predefined AI models. Blender Studio is completely open to any local or cloud LLM:
+
+- **Automatic Local Ollama Discovery:** Blender Studio automatically scans your local Ollama instance (`/api/tags`) and lists every installed model in the dropdown (`qwen2.5-coder`, `deepseek-coder`, `codellama`, `llama3`, `dolphin-mistral`, `moondream`, etc.). Pull any model with `ollama pull <name>` and it appears in your dropdown immediately.
+- **Interactive `+ Model` Dialog:** Click **`+ Model`** in the AI header to add any model to test:
+  - **Local Ollama:** Any local model name or tag.
+  - **Google Gemini:** Any Gemini catalog model (e.g. `gemini-2.0-flash-exp`, `gemini-1.5-pro`).
+  - **OpenAI-Compatible:** Any model from your LM Studio, OpenRouter, Together, Groq, or DeepSeek endpoint (e.g. `deepseek-chat`, `claude-3-5-sonnet`, `meta-llama/llama-3.3-70b-instruct`).
+- **Persistent & Manageable:** Custom models are saved to your settings, persist across sessions, and can be viewed or removed anytime in the **Settings (⚙)** modal under *Custom & Experimental AI Models*.
+
+---
+
 ## ✂ What's New in v1.2.7: Model Cutting & Multi-Plate Part Separation
 
-Preparing oversized models or complex multi-shell STLs for slicing across multiple build plates is now effortless with Blender Studio v1.2.7:
+Preparing oversized models or complex multi-shell STLs for slicing across multiple build plates is now effortless with Blender Studio:
 
 - **Interactive `✂ Cut` Modal Dialog:** Click **`✂ Cut`** directly on any printable mesh in the left sidebar to open the cutting dialog with that model pre-selected.
 - **Dual Cutting Modes:**
@@ -35,6 +48,16 @@ Preparing oversized models or complex multi-shell STLs for slicing across multip
 ---
 
 ## 📋 Complete Release Changelog
+
+### [1.2.8] - 2026-11-21
+#### Added & Enhanced
+- **Dynamic Local Ollama Model Discovery:** Automatically queries local Ollama (`/api/tags`) and lists all installed models (`qwen2.5-coder`, `deepseek-coder`, `llama3`, `dolphin-mistral`, `moondream`, etc.) in the AI CAD dropdown.
+- **Interactive `+ Model` & `➕ Add / Try New Model` Dialog:** Add any custom local or cloud model on the fly across Local Ollama, Google Gemini, or OpenAI-compatible endpoints (LM Studio, OpenRouter, DeepSeek, vLLM).
+- **Persistent Custom Models:** Custom models are saved directly to settings and persist across OrcaSlicer sessions with friendly labels.
+- **Custom Models Manager in Settings:** View, organize, and remove experimental custom models in a dedicated settings panel.
+- **Arbitrary OpenAI & Gemini Model Routing:** Ensured custom model identifiers selected in the dropdown pass through directly to OpenAI/Gemini chat endpoints without preset restrictions.
+#### Fixed & Security
+- Fixed model override precedence in OpenAI chat caller so user-selected custom models take precedence over default settings.
 
 ### [1.2.7] - 2026-11-21
 #### Added & Enhanced

@@ -6,7 +6,7 @@
 # name = "Blender Studio"
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
-# version = "1.2.7"
+# version = "1.2.8"
 # license = "PolyForm-Shield-1.0.0"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
@@ -56,7 +56,7 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Paths & Cross-Platform Auto-Discovery (avoid audit keywords: conf/config/secret)
 # --------------------------------------------------------------------------- #
-PLUGIN_VERSION = "1.2.7"
+PLUGIN_VERSION = "1.2.8"
 PLUGIN_DIR = Path(__file__).resolve().parent
 
 
@@ -164,6 +164,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "render_res_y": 720,
     "single_instance_handoff": True,
     "auto_plate_after_export": True,
+    "custom_models": [],
 }
 
 TAB_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none">
@@ -1833,6 +1834,18 @@ def _sanitize_settings(raw: dict[str, Any]) -> dict[str, Any]:
     for key in ("single_instance_handoff", "auto_plate_after_export"):
         if key in raw:
             out[key] = bool(raw[key])
+    custom_raw = raw.get("custom_models")
+    if isinstance(custom_raw, list):
+        clean_custom: list[dict[str, str]] = []
+        for item in custom_raw:
+            if isinstance(item, dict) and item.get("model"):
+                p = str(item.get("provider") or "ollama").strip().lower()
+                if p not in ("ollama", "gemini", "openai"):
+                    p = "ollama"
+                m = str(item["model"]).strip()
+                lbl = str(item.get("label") or m).strip()
+                clean_custom.append({"provider": p, "model": m, "label": lbl})
+        out["custom_models"] = clean_custom
     # Re-resolve Blender binary if the saved value is missing on disk
     if out["blender_bin"] and not os.path.isfile(out["blender_bin"]) and shutil.which(out["blender_bin"]) is None:
         detected = detect_blender_executable()
@@ -3689,6 +3702,35 @@ def _pick_ollama_coder_model(settings: dict[str, Any], requested: str) -> str:
     return ""
 
 
+def _get_installed_ollama_models(settings: dict[str, Any]) -> list[str]:
+    """Query local Ollama endpoints for installed models."""
+    models: list[str] = []
+    for base_url in (settings.get("ollama_url", "http://127.0.0.1:11435"), settings.get("ollama_fallback_url", "http://127.0.0.1:11434")):
+        if not base_url:
+            continue
+        endpoint = base_url.rstrip("/") + "/api/tags"
+        try:
+            req = urllib.request.Request(endpoint, method="GET")
+            with _safe_urlopen(req, timeout=2.5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            for m in (data.get("models") or []):
+                name = str(m.get("name") or "").strip()
+                if name and name not in models:
+                    models.append(name)
+        except Exception:
+            continue
+
+    def _sort_key(s: str) -> tuple[int, str]:
+        low = s.lower()
+        if "coder" in low:
+            return (0, low)
+        if any(t in low for t in ("vision", "vl", "llava", "moondream")):
+            return (1, low)
+        return (2, low)
+
+    return sorted(models, key=_sort_key)
+
+
 def _post_ollama_chat(
     settings: dict[str, Any],
     model: str,
@@ -3765,7 +3807,7 @@ def call_ai_agent(
     elif provider == "openai":
         base = (settings.get("openai_base_url") or "https://api.openai.com/v1").rstrip("/")
         api_key = (settings.get("openai_api_key") or os.environ.get("OPENAI_API_KEY") or "").strip()
-        chosen_model = (settings.get("openai_model") or model or "gpt-4o-mini").strip()
+        chosen_model = (model if (model and model != "custom") else (settings.get("openai_model") or "gpt-4o-mini")).strip()
         endpoint = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
         text = _call_openai_chat(endpoint, api_key, chosen_model, sys_prompt, full_prompt, images)
     else:
@@ -4225,6 +4267,7 @@ PAGE = r"""<!doctype html>
           <option value="ollama::lukey03/qwen3.5-9b-abliterated-vision:latest">Ollama: qwen3.5-9b-vision</option>
           <option value="openai::custom">OpenAI-Compatible (Settings)</option>
         </select>
+        <button class="sm" id="btn-add-model" title="Add or test a new AI model (Ollama, Gemini, or OpenAI/OpenRouter)">+ Model</button>
       </div>
       <div class="ai-box" id="ai-box">
         <textarea id="ai-prompt" rows="3" placeholder="Describe a part or edit, or drop / paste reference images, docs &amp; CAD (.step, .3mf, .stl, .md, .pdf, .py)..."></textarea>
@@ -4302,6 +4345,14 @@ PAGE = r"""<!doctype html>
     <div class="row" style="margin:6px 0 12px">
       <label class="chk"><input type="checkbox" id="cfg-single"> Load STLs into current OrcaSlicer window</label>
       <label class="chk"><input type="checkbox" id="cfg-autoplate"> Send to plate right after STL export</label>
+    </div>
+    <div class="field" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+      <label>Custom &amp; Experimental AI Models</label>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+        Test any local Ollama model, Google Gemini model, or OpenAI-compatible endpoint.
+      </div>
+      <div id="cfg-custom-models-list" style="display:flex;flex-direction:column;gap:4px;max-height:110px;overflow-y:auto"></div>
+      <button class="sm" id="btn-cfg-add-model" type="button" style="margin-top:6px">+ Add Model to Try</button>
     </div>
     <div class="field" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
       <label>Blender Bootstrap Script (Self-Contained)</label>
@@ -4388,6 +4439,40 @@ PAGE = r"""<!doctype html>
   </div>
 </div>
 
+<div class="modal-bg" id="modal-add-model">
+  <div class="modal" style="max-width:440px">
+    <h3>🤖 Add / Try New AI Model</h3>
+    <p style="margin:0 0 12px;font-size:12px;color:var(--muted)">
+      Add any local Ollama model, Google Gemini model, or OpenAI-compatible endpoint (LM Studio, OpenRouter, DeepSeek, vLLM) to test and generate CAD designs.
+    </p>
+    <div class="field">
+      <label>AI Provider</label>
+      <select id="new-model-provider" style="width:100%">
+        <option value="ollama" selected>Local Ollama (Private &amp; Free)</option>
+        <option value="gemini">Google Gemini (Cloud)</option>
+        <option value="openai">OpenAI-Compatible (LM Studio / OpenRouter / Cloud)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label id="lbl-model-id">Model Identifier</label>
+      <input type="text" id="new-model-id" placeholder="e.g. deepseek-coder-v2:16b, codellama:13b, qwen2.5-coder:14b" style="width:100%">
+      <div style="font-size:11px;color:var(--muted);margin-top:3px" id="new-model-hint">
+        Any model pulled in your local Ollama instance (`ollama pull &lt;name&gt;`).
+      </div>
+    </div>
+    <div class="field">
+      <label>Display Label (optional)</label>
+      <input type="text" id="new-model-label" placeholder="e.g. DeepSeek Coder 16B" style="width:100%">
+    </div>
+    <div class="row" style="margin-top:14px;gap:8px">
+      <button class="sm" id="btn-refresh-ollama" type="button" title="Scan local Ollama for newly pulled models">🔄 Detect Installed Ollama</button>
+      <div class="spacer"></div>
+      <button class="sm" id="btn-add-model-cancel" type="button">Cancel</button>
+      <button class="primary sm" id="btn-add-model-save" type="button">➕ Add &amp; Select</button>
+    </div>
+  </div>
+</div>
+
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
@@ -4404,6 +4489,8 @@ const S = {
   lastRenderB64: '',
   aiAttachments: [],
   settings: {},
+  ollamaModels: [],
+  customModels: [],
 };
 
 function log(text, cls) {
@@ -4912,6 +4999,7 @@ $('btn-settings').onclick = () => {
   $('cfg-samples').value = c.render_samples || 16;
   $('cfg-single').checked = c.single_instance_handoff !== false;
   $('cfg-autoplate').checked = c.auto_plate_after_export !== false;
+  renderSettingsCustomModels();
   $('modal-settings').classList.add('open');
 };
 $('btn-cfg-close').onclick = () => $('modal-settings').classList.remove('open');
@@ -5029,6 +5117,161 @@ const _fallbackCopy = text => {
   document.body.removeChild(ta);
 };
 
+function renderModelDropdown(selectedVal) {
+  const sel = $('ai-model');
+  if (!sel) return;
+  const curVal = selectedVal || sel.value || (S.settings.ai_provider && S.settings.ai_model ? `${S.settings.ai_provider}::${S.settings.ai_model}` : 'gemini::gemini-3.8-flash');
+  sel.innerHTML = '';
+
+  const grpGem = document.createElement('optgroup');
+  grpGem.label = 'Google Gemini (Cloud)';
+  [
+    ['gemini-3.8-flash', 'Gemini 3.8 Flash (High Precision)'],
+    ['gemini-3-flash-preview', 'Gemini 3 Flash (Fast)'],
+    ['gemini-3.5-flash', 'Gemini 3.5 Flash'],
+    ['gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite'],
+    ['gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite'],
+  ].forEach(([id, name]) => {
+    const opt = document.createElement('option');
+    opt.value = `gemini::${id}`;
+    opt.textContent = name;
+    grpGem.appendChild(opt);
+  });
+  sel.appendChild(grpGem);
+
+  const grpOll = document.createElement('optgroup');
+  const count = (S.ollamaModels && S.ollamaModels.length) ? ` (${S.ollamaModels.length} Installed)` : '';
+  grpOll.label = `Local Ollama${count}`;
+  const ollamaList = (S.ollamaModels && S.ollamaModels.length)
+    ? S.ollamaModels
+    : ['qwen2.5-coder:7b', 'lukey03/qwen3.5-9b-abliterated-vision:latest'];
+  ollamaList.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = `ollama::${m}`;
+    opt.textContent = `Ollama: ${m}`;
+    grpOll.appendChild(opt);
+  });
+  sel.appendChild(grpOll);
+
+  const grpOa = document.createElement('optgroup');
+  grpOa.label = 'OpenAI-Compatible (Custom Endpoint)';
+  const oaName = S.settings.openai_model || 'gpt-4o-mini';
+  const optOa = document.createElement('option');
+  optOa.value = 'openai::custom';
+  optOa.textContent = `OpenAI: ${oaName} (Settings Endpoint)`;
+  grpOa.appendChild(optOa);
+  sel.appendChild(grpOa);
+
+  if (S.customModels && S.customModels.length) {
+    const grpCust = document.createElement('optgroup');
+    grpCust.label = 'Custom Models (Added by You)';
+    S.customModels.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = `${c.provider}::${c.model}`;
+      opt.textContent = `${c.label || c.model} [${c.provider.toUpperCase()}]`;
+      grpCust.appendChild(opt);
+    });
+    sel.appendChild(grpCust);
+  }
+
+  const grpAct = document.createElement('optgroup');
+  grpAct.label = 'Manage Models';
+  const optAdd = document.createElement('option');
+  optAdd.value = '__add_custom__';
+  optAdd.textContent = '➕ Add / Try New Model...';
+  grpAct.appendChild(optAdd);
+  sel.appendChild(grpAct);
+
+  if ([...sel.options].some(o => o.value === curVal)) {
+    sel.value = curVal;
+  } else if ([...sel.options].some(o => o.value === 'gemini::gemini-3.8-flash')) {
+    sel.value = 'gemini::gemini-3.8-flash';
+  }
+}
+
+function renderSettingsCustomModels() {
+  const el = $('cfg-custom-models-list');
+  if (!el) return;
+  if (!S.customModels || !S.customModels.length) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--muted);padding:4px 0">No custom models added yet. Click below to add any Ollama, Gemini, or OpenAI model.</div>';
+    return;
+  }
+  el.innerHTML = S.customModels.map((c, i) => `
+    <div class="row" style="background:var(--bg);padding:4px 8px;border-radius:4px;border:1px solid var(--border);font-size:11px;gap:6px">
+      <span class="pill" style="font-size:9px;padding:1px 5px">${esc(c.provider.toUpperCase())}</span>
+      <span style="font-weight:600">${esc(c.label || c.model)}</span>
+      <span style="color:var(--muted);font-family:var(--mono)">(${esc(c.model)})</span>
+      <div class="spacer"></div>
+      <button class="sm danger" type="button" data-rm-model="${i}" style="padding:1px 6px;line-height:1" title="Remove model">&times;</button>
+    </div>
+  `).join('');
+  el.querySelectorAll('[data-rm-model]').forEach(b => {
+    b.onclick = () => {
+      const idx = parseInt(b.dataset.rmModel, 10);
+      const target = S.customModels[idx];
+      if (target) {
+        post({ command: 'remove_custom_model', provider: target.provider, model: target.model });
+      }
+    };
+  });
+}
+
+$('ai-model').onchange = () => {
+  if ($('ai-model').value === '__add_custom__') {
+    renderModelDropdown();
+    $('modal-add-model').classList.add('open');
+    $('new-model-id').focus();
+  } else {
+    const [p, m] = $('ai-model').value.split('::');
+    S.settings.ai_provider = p;
+    S.settings.ai_model = m;
+  }
+};
+$('btn-add-model').onclick = () => {
+  $('modal-add-model').classList.add('open');
+  $('new-model-id').focus();
+};
+$('btn-cfg-add-model').onclick = () => {
+  $('modal-settings').classList.remove('open');
+  $('modal-add-model').classList.add('open');
+  $('new-model-id').focus();
+};
+$('btn-add-model-cancel').onclick = () => $('modal-add-model').classList.remove('open');
+$('new-model-provider').onchange = () => {
+  const p = $('new-model-provider').value;
+  const idEl = $('new-model-id');
+  const hintEl = $('new-model-hint');
+  const btnRef = $('btn-refresh-ollama');
+  if (p === 'ollama') {
+    idEl.placeholder = 'e.g. deepseek-coder-v2:16b, codellama:13b, qwen2.5-coder:14b';
+    hintEl.textContent = 'Any model pulled in your local Ollama instance (ollama pull <name>).';
+    btnRef.style.display = 'inline-block';
+  } else if (p === 'gemini') {
+    idEl.placeholder = 'e.g. gemini-2.0-flash-exp, gemini-1.5-pro, gemini-2.5-flash';
+    hintEl.textContent = 'Any model identifier from Google AI Studio / Gemini API catalog.';
+    btnRef.style.display = 'none';
+  } else {
+    idEl.placeholder = 'e.g. deepseek-chat, claude-3-5-sonnet, meta-llama/llama-3.3-70b-instruct';
+    hintEl.textContent = 'Any model supported by your configured OpenAI-compatible base URL.';
+    btnRef.style.display = 'none';
+  }
+};
+$('btn-refresh-ollama').onclick = () => {
+  setStatus('Scanning local Ollama for installed models...', true);
+  post({ command: 'refresh_models' });
+};
+$('btn-add-model-save').onclick = () => {
+  const p = $('new-model-provider').value;
+  const m = $('new-model-id').value.trim();
+  const lbl = $('new-model-label').value.trim() || m;
+  if (!m) return;
+  $('modal-add-model').classList.remove('open');
+  $('new-model-id').value = '';
+  $('new-model-label').value = '';
+  setStatus(`Adding model ${lbl}...`, true);
+  post({ command: 'add_custom_model', provider: p, model: m, label: lbl });
+};
+
 $('btn-copy-bootstrap').onclick = () => {
   post({ command: 'get_bootstrap_source' });
 };
@@ -5054,19 +5297,24 @@ if (window.orca && window.orca.onMessage) {
         break;
       case 'init_state':
         S.settings = msg.settings || {};
+        if (msg.ollama_models) S.ollamaModels = msg.ollama_models;
+        if (S.settings.custom_models) S.customModels = S.settings.custom_models;
+        renderModelDropdown();
         $('projects-root').textContent = (msg.projects && msg.projects.root) || '';
-        if (S.settings.ai_provider) {
-          const val = S.settings.ai_provider === 'openai'
-            ? 'openai::custom'
-            : `${S.settings.ai_provider}::${S.settings.ai_model || 'qwen2.5-coder:7b'}`;
-          if ([...$('ai-model').options].some(o => o.value === val)) $('ai-model').value = val;
-        }
         if (msg.projects) { S.projects = msg.projects; renderFilmstrip(); }
         S.connected = !!msg.connected;
         S.scene = msg.scene || null;
         renderTopBar();
         renderLeft();
         setStatus(msg.status_text || (S.connected ? 'Connected to Blender.' : 'Ready (Blender server offline).'), false);
+        break;
+      case 'available_models':
+        if (msg.ollama_models) S.ollamaModels = msg.ollama_models;
+        if (msg.custom_models) S.customModels = msg.custom_models;
+        renderModelDropdown(msg.selected);
+        renderSettingsCustomModels();
+        if (msg.info) log(msg.info, 'ok');
+        setStatus(`Available models updated (${(S.ollamaModels || []).length} Ollama, ${(S.customModels || []).length} custom).`, false);
         break;
       case 'scene_state':
         S.connected = !!msg.connected;
@@ -5384,6 +5632,42 @@ class BlenderStudioPage(_PagesBase):
                 self._post({"command": "info", "text": note, "log": f"[Plate] {target} -> {note}"})
             elif cmd == "ai_prompt":
                 self._spawn(self._worker_ai_prompt, settings, msg)
+            elif cmd == "refresh_models":
+                self._spawn(self._worker_refresh_models, settings)
+            elif cmd == "add_custom_model":
+                p = str(msg.get("provider") or "ollama").strip().lower()
+                m = str(msg.get("model") or "").strip()
+                lbl = str(msg.get("label") or m).strip()
+                if m:
+                    cur = list(settings.get("custom_models") or [])
+                    cur = [x for x in cur if not (isinstance(x, dict) and x.get("provider") == p and x.get("model") == m)]
+                    cur.append({"provider": p, "model": m, "label": lbl})
+                    settings["custom_models"] = cur
+                    settings["ai_provider"] = p
+                    settings["ai_model"] = m
+                    save_studio_settings(settings, self)
+                    ollama_models = _get_installed_ollama_models(settings)
+                    self._post({
+                        "command": "available_models",
+                        "ollama_models": ollama_models,
+                        "custom_models": cur,
+                        "selected": f"{p}::{m}",
+                        "info": f"Added model {lbl} ({p.upper()}).",
+                    })
+            elif cmd == "remove_custom_model":
+                p = str(msg.get("provider") or "").strip().lower()
+                m = str(msg.get("model") or "").strip()
+                cur = list(settings.get("custom_models") or [])
+                cur = [x for x in cur if not (isinstance(x, dict) and x.get("provider") == p and x.get("model") == m)]
+                settings["custom_models"] = cur
+                save_studio_settings(settings, self)
+                ollama_models = _get_installed_ollama_models(settings)
+                self._post({
+                    "command": "available_models",
+                    "ollama_models": ollama_models,
+                    "custom_models": cur,
+                    "info": f"Removed model {m}.",
+                })
             elif cmd == "get_bootstrap_source":
                 self._post({"command": "bootstrap_source", "code": BOOTSTRAP_SOURCE})
             elif cmd == "export_bootstrap":
@@ -5406,12 +5690,24 @@ class BlenderStudioPage(_PagesBase):
         ensure_studio_assets()
         projects = scan_projects_dir(settings["projects_dir"])
         connected, scene = self._query_scene(settings)
+        ollama_models = _get_installed_ollama_models(settings)
         self._post({
             "command": "init_state",
             "settings": settings,
             "projects": projects,
             "connected": connected,
             "scene": scene,
+            "ollama_models": ollama_models,
+            "custom_models": settings.get("custom_models") or [],
+        })
+
+    def _worker_refresh_models(self, settings: dict[str, Any]) -> None:
+        ollama_models = _get_installed_ollama_models(settings)
+        self._post({
+            "command": "available_models",
+            "ollama_models": ollama_models,
+            "custom_models": settings.get("custom_models") or [],
+            "info": f"Detected {len(ollama_models)} installed Ollama model(s).",
         })
 
     def _worker_wait_and_refresh(self, settings: dict[str, Any], ready_msg: str) -> None:

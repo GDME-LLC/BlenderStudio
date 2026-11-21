@@ -18,7 +18,7 @@
 
 ---
 
-**Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.2.7`) compatible with OrcaSlicer v2.5.0 and v2.5.1+ that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with the built-in `cad` helper or `bpy` (or a local Ollama two-stage Vision + Coder / Gemini 3.8 Flash AI assistant with reference CAD files, images & spec documents), cut and separate models into multi-plate parts with watertight manifold capping, inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
+**Blender Studio** is a zero-dependency, single-file **OrcaSlicer Pages Plugin** (`v1.2.8`) compatible with OrcaSlicer v2.5.0 and v2.5.1+ that connects OrcaSlicer directly to a live Blender instance over a main-thread TCP bridge (port `9999`). Instead of bouncing manually between Blender, file explorers, and your slicer, you can design or tweak 3D-printable parts procedurally with the built-in `cad` helper or `bpy` (or a local Ollama two-stage Vision + Coder / Gemini 3.8 Flash AI assistant with reference CAD files, images & spec documents), cut and separate models into multi-plate parts with watertight manifold capping, inspect clearances with multi-angle and exploded EEVEE diagnostic renders, run a watertight manifold audit, and send binary STLs straight onto your active OrcaSlicer build plate in one click.
 
 <p align="center">
   <img src="assets/diagnostic_views_showcase.png" alt="Diagnostic Views Showcase" width="100%">
@@ -41,6 +41,19 @@
 | **Procedural CAD Helpers (`cad.*`)** | High-level parametric primitives: `cad.box`, `cad.rounded_plate`, `cad.cylinder`, `cad.tube`, `cad.cut_parts` (bisect into watertight plate parts), `cad.separate_loose` (split disjoint shells), `cad.strut` (with flat-bottom FDM support), `cad.oriented_box` (local pocket/aperture cuts before aiming), `cad.counterbore_hole`, `cad.slot`, `cad.magnet_pocket`, `cad.m3_hole`, `cad.place_on_bed`, and `cad.audit_geometry`. |
 | **Built-in 3D Printing Macros & Cut Modal** | One-click macros for **Interactive ✂ Cut & Separate Modal** (Z/X/Y planar slice, watertight manifold capping, Z-floor bed grounding & part spacing), **3-Point Studio Rig**, **6×2 mm Magnet Pocket Mockup** (`Ø6.25 × 2.20 mm`), **M3 Boss & Captive Nut**, **SG90 Servo Mockup**, and **Manifold / Scale / Z-Floor Audit**. |
 | **Cross-Platform Send to Plate** | Exports binary STL via `wm.stl_export` (`1 BU = 1 mm`) and delivers it straight onto the active **Prepare** build plate via Linux D-Bus (`AnotherInstance`), Windows `WM_COPYDATA`, or macOS single-instance handoff. |
+
+---
+
+## 🤖 Dynamic Model Discovery & Custom Models (v1.2.8)
+
+You are never locked into predefined AI models. Blender Studio is open to any local or cloud LLM:
+
+- **Automatic Local Ollama Discovery:** Blender Studio automatically queries your local Ollama instance (`/api/tags`) and lists every installed model in the dropdown (`qwen2.5-coder`, `deepseek-coder`, `codellama`, `llama3`, `dolphin-mistral`, `moondream`, etc.). Simply pull any model with `ollama pull <name>` and click **`🔄 Detect Installed Ollama`** or reload.
+- **Interactive `+ Model` Dialog:** Click **`+ Model`** in the AI header to add any model to test:
+  - **Local Ollama:** Any local model name or tag.
+  - **Google Gemini:** Any Gemini catalog model (e.g. `gemini-2.0-flash-exp`, `gemini-1.5-pro`).
+  - **OpenAI-Compatible:** Any model from your LM Studio, OpenRouter, Together, Groq, or DeepSeek endpoint (e.g. `deepseek-chat`, `claude-3-5-sonnet`, `meta-llama/llama-3.3-70b-instruct`).
+- **Persistent & Manageable:** Custom models are saved to your settings, persist across sessions, and can be viewed or removed anytime in the **Settings (⚙)** modal under *Custom & Experimental AI Models*.
 
 ---
 
