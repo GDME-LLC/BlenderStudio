@@ -1,10 +1,12 @@
-## [1.2.6] - 2026-11-20
-### PolyForm Shield License 1.0.0 & Dynamic Metadata Validation
+## [1.2.7] - 2026-11-21
+### Interactive Model Cutting & Multi-Plate Part Separation (✂ Cut Macro & Modal)
 
 #### Added & Enhanced
-- Licensed under PolyForm Shield License 1.0.0 to protect against competitive commercial misuse while keeping full free use for users.
-- Dedicated GNU GPL v3.0 (`GPL-3.0-or-later`) license for `standalone/server_bootstrap.py` for Blender `bpy` compatibility.
-- Updated PEP 723 metadata with `PolyForm-Shield-1.0.0` license identifier and dynamic semver validation.
+- Interactive Cut & Separate Modal (`✂ Cut`): Effortlessly split complex 3D models into watertight pieces or separate loose disconnected shells for independent build plates directly from the mesh sidebar.
+- Watertight Manifold Bisect & Capping: Advanced planar bisecting with automated hole filling, face normal recalculation, and guaranteed 0 non-manifold edges.
+- Automatic Z-Floor Grounding & Part Spacing: Automatically aligns cut parts flat against the build bed (Z=0) with configurable spacing (default 25mm) for instant collision-free multi-plate slicing.
+- Built-in `✂ Cut` Macro (`cut_split`): Instant macro button in the bpy script bar with fallback execution directly in Blender Python editor.
+- Procedural CAD Helpers: Added `cad.cut_parts(...)` and `cad.separate_loose(...)` to the embedded `cad` library and exposed `bpy.cad`.
 
 #### Fixed & Security
-- Replaced hardcoded version test assertions with dynamic semver and consistency verification.
+- Ensured full coordinate transform application (`location=True, rotation=True, scale=True`) prior to bisecting to guarantee 100% accurate planar positioning.

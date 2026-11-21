@@ -6,7 +6,7 @@
 # name = "Blender Studio"
 # description = "Live Blender (:9999) procedural bpy CAD, hardware mockups, diagnostic EEVEE render studio, AI CAD assistant, and one-click Send to Plate."
 # author = "Gabrial McCauley (GDME LLC)"
-# version = "1.2.6"
+# version = "1.2.7"
 # license = "PolyForm-Shield-1.0.0"
 # ///
 """Blender Studio — OrcaSlicer Pages plugin for live procedural Blender CAD.
@@ -56,7 +56,7 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 # Paths & Cross-Platform Auto-Discovery (avoid audit keywords: conf/config/secret)
 # --------------------------------------------------------------------------- #
-PLUGIN_VERSION = "1.2.6"
+PLUGIN_VERSION = "1.2.7"
 PLUGIN_DIR = Path(__file__).resolve().parent
 
 
@@ -1151,6 +1151,142 @@ def _cad_audit():
     return {"ok": issues == 0 and len(results) > 0, "issues": issues, "issue_messages": issue_msgs, "objects": results}
 
 
+def _cad_cut_parts(target, axis="Z", ratio=0.5, offset=0.0, align_to_bed=True, spacing=20.0, colorize=True):
+    """Cut target object along an axis (Z, X, or Y) into two watertight manifold pieces ready for separate plates."""
+    if isinstance(target, str):
+        target = bpy.data.objects.get(target)
+    if not target or target.type != "MESH":
+        raise ValueError(f"Invalid target object for cad.cut_parts: {target}")
+
+    bpy.ops.object.select_all(action="DESELECT")
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    ax = str(axis).upper()
+    if ax not in ("X", "Y", "Z"):
+        ax = "Z"
+    idx = {"X": 0, "Y": 1, "Z": 2}[ax]
+
+    bbox = [target.matrix_world @ mathutils.Vector(c) for c in target.bound_box]
+    min_v = min(p[idx] for p in bbox)
+    max_v = max(p[idx] for p in bbox)
+    span = max_v - min_v
+
+    cut_pos = min_v + span * max(0.01, min(0.99, float(ratio))) + float(offset)
+    plane_co = mathutils.Vector((0.0, 0.0, 0.0))
+    plane_no = mathutils.Vector((0.0, 0.0, 0.0))
+    plane_co[idx] = cut_pos
+    plane_no[idx] = 1.0
+
+    suffix_a = "Lower" if ax == "Z" else ("Left" if ax == "X" else "Front")
+    suffix_b = "Upper" if ax == "Z" else ("Right" if ax == "X" else "Back")
+    stem = target.name.split("_Part")[0]
+
+    part_b = target.copy()
+    part_b.data = target.data.copy()
+    target.name = f"{stem}_{suffix_a}"
+    part_b.name = f"{stem}_{suffix_b}"
+    col = target.users_collection[0] if target.users_collection else bpy.context.scene.collection
+    col.objects.link(part_b)
+
+    # Slice Part A
+    bm_a = bmesh.new()
+    bm_a.from_mesh(target.data)
+    bmesh.ops.bisect_plane(
+        bm_a, geom=bm_a.verts[:] + bm_a.edges[:] + bm_a.faces[:],
+        plane_co=plane_co, plane_no=plane_no, clear_outer=True,
+    )
+    open_a = [e for e in bm_a.edges if not e.is_manifold]
+    if open_a:
+        bmesh.ops.holes_fill(bm_a, edges=open_a, sides=0)
+    bmesh.ops.recalc_face_normals(bm_a, faces=bm_a.faces)
+    bm_a.to_mesh(target.data)
+    bm_a.free()
+    target.data.update()
+
+    # Slice Part B
+    bm_b = bmesh.new()
+    bm_b.from_mesh(part_b.data)
+    bmesh.ops.bisect_plane(
+        bm_b, geom=bm_b.verts[:] + bm_b.edges[:] + bm_b.faces[:],
+        plane_co=plane_co, plane_no=-plane_no, clear_outer=True,
+    )
+    open_b = [e for e in bm_b.edges if not e.is_manifold]
+    if open_b:
+        bmesh.ops.holes_fill(bm_b, edges=open_b, sides=0)
+    bmesh.ops.recalc_face_normals(bm_b, faces=bm_b.faces)
+    bm_b.to_mesh(part_b.data)
+    bm_b.free()
+    part_b.data.update()
+
+    parts = [target, part_b]
+    palette = [(0.15, 0.65, 0.60, 1.0), (0.91, 0.49, 0.05, 1.0)]
+    cur_x = 0.0
+    for i, p in enumerate(parts):
+        bpy.ops.object.select_all(action="DESELECT")
+        p.select_set(True)
+        bpy.context.view_layer.objects.active = p
+        bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+        if align_to_bed:
+            min_z = min((p.matrix_world @ mathutils.Vector(c)).z for c in p.bound_box)
+            p.location.z -= min_z
+        if spacing and float(spacing) > 0 and len(parts) > 1:
+            pw = p.dimensions.x
+            if i > 0:
+                cur_x += float(spacing) + pw * 0.5
+                p.location.x += cur_x
+                cur_x += pw * 0.5
+        if colorize:
+            _cad_color(p, palette[i % len(palette)])
+    bpy.context.view_layer.update()
+    return tuple(parts)
+
+
+def _cad_separate_loose(target, align_to_bed=True, spacing=20.0, colorize=True):
+    """Separate disjoint loose bodies/shells within target object into individual printable meshes."""
+    if isinstance(target, str):
+        target = bpy.data.objects.get(target)
+    if not target or target.type != "MESH":
+        raise ValueError(f"Invalid target object for cad.separate_loose: {target}")
+
+    bpy.ops.object.select_all(action="DESELECT")
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.separate(type="LOOSE")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    parts = [o for o in bpy.context.selected_objects if o.type == "MESH"]
+    stem = target.name.split("_Part")[0]
+    for i, p in enumerate(parts):
+        p.name = f"{stem}_Part_{i+1}"
+
+    palette = [
+        (0.15, 0.65, 0.60, 1.0), (0.91, 0.49, 0.05, 1.0),
+        (0.23, 0.51, 0.96, 1.0), (0.85, 0.20, 0.25, 1.0),
+        (0.55, 0.25, 0.75, 1.0), (0.20, 0.75, 0.35, 1.0),
+    ]
+    cur_x = 0.0
+    for i, p in enumerate(parts):
+        bpy.ops.object.select_all(action="DESELECT")
+        p.select_set(True)
+        bpy.context.view_layer.objects.active = p
+        bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+        if align_to_bed:
+            min_z = min((p.matrix_world @ mathutils.Vector(c)).z for c in p.bound_box)
+            p.location.z -= min_z
+        if spacing and float(spacing) > 0 and len(parts) > 1:
+            pw = p.dimensions.x
+            if i > 0:
+                cur_x += float(spacing) + pw * 0.5
+                p.location.x += cur_x
+                cur_x += pw * 0.5
+        if colorize:
+            _cad_color(p, palette[i % len(palette)])
+    bpy.context.view_layer.update()
+    return tuple(parts)
+
+
 def _build_cad_module():
     mod = types.ModuleType("cad")
     mod.clear = _cad_clear
@@ -1178,6 +1314,8 @@ def _build_cad_module():
     mod.local_pocket = _cad_local_pocket
     mod.audit = _cad_audit
     mod.audit_geometry = _cad_audit
+    mod.cut_parts = _cad_cut_parts
+    mod.separate_loose = _cad_separate_loose
     return mod
 
 
@@ -1354,6 +1492,10 @@ def _install_bpy_shims():
             ops_overrides["export_mesh"] = _OpsSubProxy(orig_export_mesh, {"stl": _safe_stl_export})
 
     bpy.ops = _OpsSubProxy(orig_ops, ops_overrides)
+    try:
+        setattr(bpy, "cad", cad)
+    except Exception:
+        pass
 
 
 _BSDF_ALIASES = (
@@ -2553,6 +2695,69 @@ finally:
 # Built-in CAD Macros
 # --------------------------------------------------------------------------- #
 MACROS: dict[str, str] = {
+    "cut_split": '''# Cut object into watertight pieces (or separate loose shells) for separate plates
+import bpy, bmesh, mathutils
+
+# Target active or first printable mesh
+target = bpy.context.active_object
+if not target or target.type != "MESH" or target.name.startswith(("M_", "Mockup_", "Vis_", "Floor")):
+    target = next((o for o in bpy.data.objects if o.type == "MESH" and not o.name.startswith(("M_", "Mockup_", "Vis_", "Floor"))), None)
+
+if not target:
+    raise RuntimeError("No printable mesh found in the scene to cut.")
+
+print(f"=== Model Cutting / Plate Separation for: {target.name} ===")
+
+# Use cad helper if available
+if hasattr(bpy, "cad"):
+    parts = bpy.cad.cut_parts(target, axis="Z", ratio=0.5, align_to_bed=True, spacing=20.0)
+    print(f"Cut complete: {[p.name for p in parts]}")
+elif "cad" in globals():
+    parts = cad.cut_parts(target, axis="Z", ratio=0.5, align_to_bed=True, spacing=20.0)
+    print(f"Cut complete: {[p.name for p in parts]}")
+else:
+    # Standalone execution without server_bootstrap helper
+    bpy.ops.object.select_all(action="DESELECT")
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    bbox = [target.matrix_world @ mathutils.Vector(c) for c in target.bound_box]
+    min_z = min(p.z for p in bbox)
+    max_z = max(p.z for p in bbox)
+    cut_z = min_z + (max_z - min_z) * 0.5
+
+    part_b = target.copy()
+    part_b.data = target.data.copy()
+    stem = target.name.split("_Part")[0]
+    target.name = f"{stem}_Lower"
+    part_b.name = f"{stem}_Upper"
+    (target.users_collection[0] if target.users_collection else bpy.context.scene.collection).objects.link(part_b)
+
+    for obj, sign in [(target, 1.0), (part_b, -1.0)]:
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bmesh.ops.bisect_plane(bm, geom=bm.verts[:] + bm.edges[:] + bm.faces[:],
+                               plane_co=(0, 0, cut_z), plane_no=(0, 0, sign), clear_outer=True)
+        open_e = [e for e in bm.edges if not e.is_manifold]
+        if open_e:
+            bmesh.ops.holes_fill(bm, edges=open_e, sides=0)
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        bm.to_mesh(obj.data)
+        bm.free()
+
+    for i, p in enumerate([target, part_b]):
+        bpy.ops.object.select_all(action="DESELECT")
+        p.select_set(True)
+        bpy.context.view_layer.objects.active = p
+        bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+        mz = min((p.matrix_world @ mathutils.Vector(c)).z for c in p.bound_box)
+        p.location.z -= mz
+        if i > 0:
+            p.location.x += p.dimensions.x + 20.0
+
+    print(f"Cut {stem} into {target.name} and {part_b.name} (watertight & grounded to Z=0)")
+''',
     "studio_rig": '''# Setup 3-Point Studio Lighting & RenderCam aimed at scene center
 import bpy, mathutils
 pts = []
@@ -4042,6 +4247,7 @@ PAGE = r"""<!doctype html>
       <div class="col-head">
         <span>🐍 bpy Script &amp; Macros</span>
         <div class="spacer"></div>
+        <button class="sm" data-macro="cut_split" title="Cut active mesh into watertight pieces or separate loose bodies">✂ Cut</button>
         <button class="sm" data-macro="studio_rig" title="Add 3-point lighting & RenderCam">Rig</button>
         <button class="sm" data-macro="magnet_mockup" title="Add 6x2mm magnet mockup">+Magnet</button>
         <button class="sm" data-macro="m3_boss" title="Add M3 screw & nut mockup">+M3</button>
@@ -4124,6 +4330,60 @@ PAGE = r"""<!doctype html>
       <div class="spacer"></div>
       <button class="sm" id="btn-new-cancel">Cancel</button>
       <button class="primary sm" id="btn-new-create">Create &amp; Open</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="modal-cut">
+  <div class="modal" style="max-width:440px">
+    <h3>✂ Cut &amp; Separate Model for Plates</h3>
+    <p style="margin:0 0 12px;font-size:12px;color:var(--muted)">
+      Split any 3D model into watertight, manifold pieces or separate loose disconnected shells ready for separate build plates.
+    </p>
+    <div class="field">
+      <label>Target Object</label>
+      <select id="cut-target-sel" style="width:100%"></select>
+    </div>
+    <div class="field">
+      <label>Operation Mode</label>
+      <div class="row" style="gap:12px">
+        <label class="chk"><input type="radio" name="cut-mode" value="plane" id="cut-mode-plane" checked> Planar Slice (Bisect)</label>
+        <label class="chk"><input type="radio" name="cut-mode" value="loose" id="cut-mode-loose"> Separate Loose Shells</label>
+      </div>
+    </div>
+    <div id="cut-plane-opts">
+      <div class="grid2">
+        <div class="field">
+          <label>Cut Plane Axis</label>
+          <select id="cut-axis" style="width:100%">
+            <option value="Z" selected>Z (Height / Horizontal Cut)</option>
+            <option value="X">X (Width / Vertical Side-to-Side)</option>
+            <option value="Y">Y (Depth / Vertical Front-to-Back)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Offset (mm)</label>
+          <input type="number" id="cut-offset" value="0.0" step="0.5" style="width:100%">
+        </div>
+      </div>
+      <div class="field">
+        <label>Cut Height / Ratio: <span id="cut-ratio-val" style="font-family:var(--mono);color:var(--accent);font-weight:700">50%</span></label>
+        <input type="range" id="cut-ratio" min="10" max="90" value="50" step="5" style="width:100%;margin-top:4px">
+      </div>
+    </div>
+    <div class="row" style="margin:8px 0 12px;gap:12px">
+      <label class="chk"><input type="checkbox" id="cut-align-bed" checked> Align pieces to bed (Z=0)</label>
+      <label class="chk"><input type="checkbox" id="cut-colorize" checked> Colorize halves</label>
+    </div>
+    <div class="field">
+      <label>Part Spacing on Bed (mm)</label>
+      <input type="number" id="cut-spacing" value="25.0" step="5.0" style="width:100%">
+    </div>
+    <div class="row" style="margin-top:14px;gap:8px">
+      <button class="sm" id="btn-cut-editor" type="button" title="Paste generated Python code into bpy editor">📝 To Editor</button>
+      <div class="spacer"></div>
+      <button class="sm" id="btn-cut-cancel" type="button">Cancel</button>
+      <button class="primary sm" id="btn-cut-run" type="button">✂ Cut &amp; Separate</button>
     </div>
   </div>
 </div>
@@ -4213,6 +4473,7 @@ function renderLeft() {
           <span style="font-size:11px;color:var(--muted);margin-left:4px">${detail}</span>
         </div>
         <div class="item-acts">
+          <button class="sm" data-cut-target="${esc(o.name)}" title="Cut or separate this model into parts for separate plates">✂ Cut</button>
           <button class="sm" data-export-one="${esc(o.name)}" data-plate="0">Export STL</button>
           <button class="teal sm" data-export-one="${esc(o.name)}" data-plate="1">🚀 Send to Plate</button>
         </div>
@@ -4232,6 +4493,9 @@ function renderLeft() {
     body.innerHTML = html;
     const tog = $('btn-tog-mock');
     if (tog) tog.onclick = () => { S.showMockups = !S.showMockups; renderLeft(); };
+    body.querySelectorAll('[data-cut-target]').forEach(b => {
+      b.onclick = () => openCutModal(b.dataset.cutTarget);
+    });
     body.querySelectorAll('[data-export-one]').forEach(b => {
       b.onclick = () => {
         const name = b.dataset.exportOne;
@@ -4682,6 +4946,70 @@ $('btn-new-create').onclick = () => {
   $('modal-new').classList.remove('open');
   setStatus(`Creating ${name}.blend...`, true);
   post({ command: 'new_project', name });
+};
+
+function openCutModal(preselectedTarget) {
+  const sel = $('cut-target-sel');
+  if (!sel) return;
+  sel.innerHTML = '';
+  const pr = (S.scene && S.scene.printable) || [];
+  if (!pr.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(No printable meshes in scene)';
+    sel.appendChild(opt);
+  } else {
+    for (const o of pr) {
+      const opt = document.createElement('option');
+      opt.value = o.name;
+      opt.textContent = o.name;
+      if (preselectedTarget && o.name === preselectedTarget) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+  $('modal-cut').classList.add('open');
+}
+
+function buildCutScript() {
+  const target = $('cut-target-sel').value;
+  const mode = document.querySelector('input[name="cut-mode"]:checked')?.value || 'plane';
+  const alignBed = $('cut-align-bed').checked ? 'True' : 'False';
+  const colorize = $('cut-colorize').checked ? 'True' : 'False';
+  const spacing = parseFloat($('cut-spacing').value) || 25.0;
+  if (!target) return '# No object selected';
+  if (mode === 'loose') {
+    return `# Separate loose shells/bodies in ${target}\nimport bpy\nif hasattr(bpy, "cad"): parts = bpy.cad.separate_loose(${JSON.stringify(target)}, align_to_bed=${alignBed}, spacing=${spacing}, colorize=${colorize})\nelif "cad" in globals(): parts = cad.separate_loose(${JSON.stringify(target)}, align_to_bed=${alignBed}, spacing=${spacing}, colorize=${colorize})\nelse: print("Error: cad module not loaded")\n`;
+  } else {
+    const axis = $('cut-axis').value || 'Z';
+    const ratio = (parseInt($('cut-ratio').value, 10) || 50) / 100.0;
+    const offset = parseFloat($('cut-offset').value) || 0.0;
+    return `# Cut ${target} along ${axis} axis into watertight manifold halves\nimport bpy\nif hasattr(bpy, "cad"): parts = bpy.cad.cut_parts(${JSON.stringify(target)}, axis=${JSON.stringify(axis)}, ratio=${ratio}, offset=${offset}, align_to_bed=${alignBed}, spacing=${spacing}, colorize=${colorize})\nelif "cad" in globals(): parts = cad.cut_parts(${JSON.stringify(target)}, axis=${JSON.stringify(axis)}, ratio=${ratio}, offset=${offset}, align_to_bed=${alignBed}, spacing=${spacing}, colorize=${colorize})\nelse: print("Error: cad module not loaded")\n`;
+  }
+}
+
+document.querySelectorAll('input[name="cut-mode"]').forEach(r => {
+  r.onchange = () => {
+    const isPlane = $('cut-mode-plane').checked;
+    $('cut-plane-opts').style.display = isPlane ? 'block' : 'none';
+  };
+});
+$('cut-ratio').oninput = () => {
+  $('cut-ratio-val').textContent = $('cut-ratio').value + '%';
+};
+$('btn-cut-cancel').onclick = () => $('modal-cut').classList.remove('open');
+$('btn-cut-editor').onclick = () => {
+  const code = buildCutScript();
+  $('modal-cut').classList.remove('open');
+  $('bpy-code').value = code;
+  $('bpy-code').focus();
+  log('Pasted Cut & Separate script into editor.', 'info');
+};
+$('btn-cut-run').onclick = () => {
+  const code = buildCutScript();
+  const target = $('cut-target-sel').value;
+  $('modal-cut').classList.remove('open');
+  setStatus(`Cutting ${target} for plate separation...`, true);
+  post({ command: 'run_bpy', code, auto_render: true });
 };
 
 const _fallbackCopy = text => {

@@ -151,6 +151,7 @@ def _cad_box(
     centered_z=False,
     color=None,
     mockup=False,
+    rotation=(0.0, 0.0, 0.0),
 ):
     """Create a watertight millimeter box resting on Z=location[2] (or centered if centered_z)."""
     w, d, h = max(0.05, float(width)), max(0.05, float(depth)), max(0.05, float(height))
@@ -177,6 +178,7 @@ def _cad_box(
     bm.free()
     obj = bpy.data.objects.new(name, mesh)
     obj.location = tuple(float(c) for c in location)
+    obj.rotation_euler = tuple(float(r) for r in rotation)
     col = _ensure_collection("Hardware_Mockups" if mockup else "CAD_Printable_Parts")
     _link_only(obj, col)
     if color is not None:
@@ -207,14 +209,41 @@ def _cad_bevel(target, offset=1.0, segments=4, profile=0.5):
 
 
 def _cad_cut(target, cutter, delete_cutter=True):
+    if isinstance(cutter, (list, tuple)):
+        base = target
+        for c in cutter:
+            base = _cad_boolean(base, c, "DIFFERENCE", delete_tool=delete_cutter)
+        return base
     return _cad_boolean(target, cutter, "DIFFERENCE", delete_tool=delete_cutter)
 
 
-def _cad_union(target, tool, delete_tool=True):
+def _cad_union(target, tool=None, delete_tool=True):
+    if tool is None and isinstance(target, (list, tuple)) and target:
+        base = _resolve_obj(target[0])
+        for t in target[1:]:
+            base = _cad_boolean(base, t, "UNION", delete_tool=delete_tool)
+        return base
+    if isinstance(target, str) and (bpy is None or bpy.data.objects.get(target) is None) and isinstance(tool, (list, tuple)) and tool:
+        base = _resolve_obj(tool[0])
+        if base:
+            base.name = target
+        for t in tool[1:]:
+            base = _cad_boolean(base, t, "UNION", delete_tool=delete_tool)
+        return base
+    if isinstance(tool, (list, tuple)):
+        base = target
+        for t in tool:
+            base = _cad_boolean(base, t, "UNION", delete_tool=delete_tool)
+        return base
     return _cad_boolean(target, tool, "UNION", delete_tool=delete_tool)
 
 
 def _cad_intersect(target, tool, delete_tool=True):
+    if isinstance(tool, (list, tuple)):
+        base = target
+        for t in tool:
+            base = _cad_boolean(base, t, "INTERSECT", delete_tool=delete_tool)
+        return base
     return _cad_boolean(target, tool, "INTERSECT", delete_tool=delete_tool)
 
 
@@ -223,6 +252,8 @@ def _cad_boolean(target, tool, operation="DIFFERENCE", delete_tool=True):
     tool = _resolve_obj(tool)
     if target is None or tool is None:
         return target
+    if hasattr(bpy.context, "view_layer"):
+        bpy.context.view_layer.update()
     mod = target.modifiers.new(name=f"Bool_{operation}", type="BOOLEAN")
     mod.operation = operation
     if hasattr(mod, "solver"):
@@ -537,12 +568,18 @@ def _cad_image_relief(
     return obj
 
 
-def _cad_hole(target, diameter=3.4, depth=100.0, location=(0.0, 0.0, 0.0)):
-    lx, ly, lz = (float(c) for c in location)
+def _cad_hole(target, diameter=3.4, depth=100.0, location=(0.0, 0.0, 0.0), axis="Z"):
+    lx, ly, lz = _pt3(location)
     cutter = _cad_cylinder(
         name="_hole_cut", diameter=diameter, height=depth,
         location=(lx, ly, lz), centered_z=True,
     )
+    ax = str(axis or "Z").upper()
+    if ax == "X":
+        cutter.rotation_euler = (0.0, math.pi * 0.5, 0.0)
+    elif ax == "Y":
+        cutter.rotation_euler = (math.pi * 0.5, 0.0, 0.0)
+    bpy.context.view_layer.update()
     return _cad_cut(target, cutter, delete_cutter=True)
 
 
@@ -575,6 +612,506 @@ def _cad_m3_hole(target, depth=20.0, location=(0.0, 0.0, 0.0), nut_trap=True, sh
     return target
 
 
+def _pt3(pt, default_z=0.0):
+    vals = [float(c) for c in pt]
+    if len(vals) == 2:
+        return (vals[0], vals[1], float(default_z))
+    return (vals[0], vals[1], vals[2])
+
+
+def _cad_count_mesh_islands(bm):
+    if not bm.faces:
+        return 0
+    seen = set()
+    islands = 0
+    for f in bm.faces:
+        if f in seen:
+            continue
+        islands += 1
+        stack = [f]
+        seen.add(f)
+        while stack:
+            cur = stack.pop()
+            for e in cur.edges:
+                for nf in e.link_faces:
+                    if nf not in seen:
+                        seen.add(nf)
+                        stack.append(nf)
+    return islands
+
+
+def _cad_capsule_bmesh(start, end, width=10.0, thickness=6.0, end_width=None, flat_bottom_z=None, segments=24):
+    """Build a watertight manifold capsule/stadium prism (or gusseted ramp) connecting two 3D points."""
+    sx, sy, sz = _pt3(start)
+    ex, ey, ez = _pt3(end)
+    r1 = max(0.2, float(width) * 0.5)
+    r2 = max(0.2, float(end_width) * 0.5) if end_width is not None else r1
+    t = max(0.2, float(thickness))
+    seg = max(8, int(segments))
+    zs_lo = float(flat_bottom_z) if flat_bottom_z is not None else sz
+    zs_hi = max(zs_lo + 0.2, sz + t)
+    ze_lo = float(flat_bottom_z) if flat_bottom_z is not None else ez
+    ze_hi = max(ze_lo + 0.2, ez + t)
+    bm = bmesh.new()
+    for (cx, cy, r, zlo, zhi) in ((sx, sy, r1, zs_lo, zs_hi), (ex, ey, r2, ze_lo, ze_hi)):
+        for i in range(seg):
+            ang = (2.0 * math.pi * i) / seg
+            px = cx + r * math.cos(ang)
+            py = cy + r * math.sin(ang)
+            bm.verts.new((px, py, zlo))
+            bm.verts.new((px, py, zhi))
+    res = bmesh.ops.convex_hull(bm, input=list(bm.verts))
+    drop = list({
+        g for g in (res.get("geom_interior", []) + res.get("geom_unused", []))
+        if isinstance(g, bmesh.types.BMVert) and g.is_valid
+    })
+    if drop:
+        bmesh.ops.delete(bm, geom=drop, context="VERTS")
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.001)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return bm
+
+
+def _cad_strut(
+    name="Strut",
+    start=(0.0, 0.0, 0.0),
+    end=(25.0, 0.0, 0.0),
+    width=10.0,
+    thickness=6.0,
+    end_width=None,
+    flat_bottom=False,
+    flat_bottom_z=None,
+    segments=24,
+    color=None,
+    mockup=False,
+):
+    """Create a rigid manifold structural arm/gusset connecting 3D points `start` and `end`."""
+    p1 = _pt3(start)
+    p2 = _pt3(end)
+    fbz = float(flat_bottom_z) if flat_bottom_z is not None else (min(p1[2], p2[2]) if flat_bottom else None)
+    bm = _cad_capsule_bmesh(
+        start=p1, end=p2, width=width, thickness=thickness,
+        end_width=end_width, flat_bottom_z=fbz, segments=segments,
+    )
+    mesh = bpy.data.meshes.new(name)
+    bm.to_mesh(mesh)
+    bm.free()
+    obj = bpy.data.objects.new(name, mesh)
+    col = _ensure_collection("Hardware_Mockups" if mockup else "CAD_Printable_Parts")
+    _link_only(obj, col)
+    if color is not None:
+        _cad_color(obj, color)
+    return obj
+
+
+def _cad_slot(target, start=(0.0, 0.0, 0.0), end=(10.0, 0.0, 0.0), diameter=3.4, depth=40.0):
+    """Cut an elongated mounting/adjustment slot between two XY(Z) points."""
+    p1 = _pt3(start)
+    p2 = _pt3(end)
+    z_mid = (p1[2] + p2[2]) * 0.5
+    h = max(1.0, float(depth))
+    bm = _cad_capsule_bmesh(
+        start=(p1[0], p1[1], z_mid - h * 0.5),
+        end=(p2[0], p2[1], z_mid - h * 0.5),
+        width=diameter,
+        thickness=h,
+        segments=24,
+    )
+    mesh = bpy.data.meshes.new("_slot_cut")
+    bm.to_mesh(mesh)
+    bm.free()
+    cutter = bpy.data.objects.new("_slot_cut", mesh)
+    _link_only(cutter, _ensure_collection("CAD_Printable_Parts"))
+    bpy.context.view_layer.update()
+    return _cad_cut(target, cutter, delete_cutter=True)
+
+
+def _cad_counterbore_hole(
+    target,
+    diameter=3.4,
+    cb_diameter=6.4,
+    cb_depth=3.5,
+    depth=40.0,
+    location=(0.0, 0.0, 0.0),
+    axis="Z",
+    flip=False,
+    segments=32,
+):
+    """Cut a through-hole plus coaxial counterbore starting at `location` inward along `-axis` (or `+axis` if flip)."""
+    if isinstance(axis, str):
+        ax_map = {"X": (1.0, 0.0, 0.0), "Y": (0.0, 1.0, 0.0), "Z": (0.0, 0.0, 1.0)}
+        base_dir = mathutils.Vector(ax_map.get(axis.upper(), (0.0, 0.0, 1.0)))
+    else:
+        base_dir = mathutils.Vector([float(c) for c in axis])
+    if base_dir.length < 1e-6:
+        base_dir = mathutils.Vector((0.0, 0.0, 1.0))
+    d_vec = base_dir.normalized() * (1.0 if flip else -1.0)
+    up_axis = "X" if abs(d_vec.y) > 0.9 else "Y"
+    rot_eu = d_vec.to_track_quat("Z", up_axis).to_euler()
+    loc_v = mathutils.Vector(_pt3(location)) - d_vec * 0.5
+
+    thru = _cad_cylinder(
+        name="_cb_thru", diameter=diameter, height=float(depth) + 0.5,
+        location=tuple(loc_v), segments=segments,
+    )
+    thru.rotation_euler = rot_eu
+    cb = _cad_cylinder(
+        name="_cb_head", diameter=cb_diameter, height=float(cb_depth) + 0.5,
+        location=tuple(loc_v), segments=segments,
+    )
+    cb.rotation_euler = rot_eu
+    bpy.context.view_layer.update()
+    _cad_cut(target, thru, delete_cutter=True)
+    return _cad_cut(target, cb, delete_cutter=True)
+
+
+def _cad_aim_rotation(from_point, to_point, forward="-Z", up="Y"):
+    """Compute a Euler rotation tracking `forward` from `from_point` toward `to_point`."""
+    direction = mathutils.Vector(_pt3(to_point)) - mathutils.Vector(_pt3(from_point))
+    if direction.length < 1e-6:
+        return mathutils.Euler((0.0, 0.0, 0.0))
+    return direction.to_track_quat(forward, up).to_euler()
+
+
+def _cad_aim_at(target, target_point, forward="-Z", up="Y"):
+    """Rotate `target` in place so its `forward` local axis points directly at `target_point`."""
+    target = _resolve_obj(target)
+    if target is None:
+        return None
+    target.rotation_euler = _cad_aim_rotation(target.location, target_point, forward=forward, up=up)
+    if hasattr(bpy.context, "view_layer"):
+        bpy.context.view_layer.update()
+    return target
+
+
+def _cad_local_pocket(
+    target,
+    width=21.6,
+    depth=18.2,
+    height=4.0,
+    local_offset=(0.0, 0.0, 0.0),
+    corner_radius=1.0,
+    lens_hole_dia=0.0,
+    lens_offset=(0.0, 0.0),
+    through_depth=25.0,
+):
+    """Cut a rectangular pocket (and optional lens bore) aligned in `target`'s local coordinate frame."""
+    target = _resolve_obj(target)
+    if target is None:
+        return None
+    bpy.context.view_layer.update()
+    off = mathutils.Vector(_pt3(local_offset))
+    pocket = _cad_box(
+        name="_local_pocket", width=width, depth=depth, height=height,
+        location=(0.0, 0.0, 0.0), corner_radius=corner_radius,
+    )
+    pocket.matrix_world = target.matrix_world @ mathutils.Matrix.Translation(off)
+    bpy.context.view_layer.update()
+    _cad_cut(target, pocket, delete_cutter=True)
+
+    if lens_hole_dia and float(lens_hole_dia) > 0.1:
+        lo_x, lo_y = float(lens_offset[0]), float(lens_offset[1])
+        bore = _cad_cylinder(
+            name="_local_lens_bore", diameter=lens_hole_dia, height=float(through_depth),
+            location=(0.0, 0.0, 0.0), centered_z=True, segments=36,
+        )
+        bore.matrix_world = target.matrix_world @ mathutils.Matrix.Translation(mathutils.Vector((lo_x, lo_y, 0.0)))
+        bpy.context.view_layer.update()
+        _cad_cut(target, bore, delete_cutter=True)
+    return target
+
+
+def _cad_oriented_box(
+    name="Housing",
+    width=26.0,
+    depth=22.0,
+    height=10.0,
+    location=(0.0, 0.0, 0.0),
+    aim_at=None,
+    rotation=None,
+    pocket_size=None,
+    pocket_offset=(0.0, 0.0, 0.0),
+    aperture_diameter=0.0,
+    usb_slot_size=None,
+    corner_radius=2.5,
+    color=None,
+    mockup=False,
+):
+    """Create a housing with local-frame pocket/aperture/USB cuts, aimed and baked into world verts."""
+    w, d, h = max(1.0, float(width)), max(1.0, float(depth)), max(1.0, float(height))
+    obj = _cad_box(
+        name=name, width=w, depth=d, height=h,
+        location=(0.0, 0.0, 0.0), corner_radius=corner_radius,
+        color=color, mockup=mockup,
+    )
+    if pocket_size is not None and len(pocket_size) >= 3:
+        pw, pd, ph = float(pocket_size[0]), float(pocket_size[1]), float(pocket_size[2])
+        px, py, pz = _pt3(pocket_offset)
+        p_cut = _cad_box(
+            name="_ob_pocket", width=pw, depth=pd, height=ph + 2.0,
+            location=(px, py, max(-0.5, h - ph + pz)), corner_radius=min(1.0, float(corner_radius) * 0.5),
+        )
+        _cad_cut(obj, p_cut, delete_cutter=True)
+
+    if aperture_diameter and float(aperture_diameter) > 0.1:
+        px, py, _ = _pt3(pocket_offset)
+        ap = _cad_cylinder(
+            name="_ob_aperture", diameter=float(aperture_diameter), height=h + 4.0,
+            location=(px, py, -2.0), segments=36,
+        )
+        _cad_cut(obj, ap, delete_cutter=True)
+
+    if usb_slot_size is not None and len(usb_slot_size) >= 2:
+        sw, sh = float(usb_slot_size[0]), float(usb_slot_size[1])
+        ph_ref = float(pocket_size[2]) if (pocket_size is not None and len(pocket_size) >= 3) else h * 0.6
+        usb_cut = _cad_box(
+            name="_ob_usb", width=sw, depth=d * 0.65, height=sh + 1.0,
+            location=(0.0, -d * 0.42, max(-0.5, h - ph_ref - 0.5)), corner_radius=0.8,
+        )
+        _cad_cut(obj, usb_cut, delete_cutter=True)
+
+    loc_v = mathutils.Vector(_pt3(location))
+    if aim_at is not None:
+        direction = mathutils.Vector(_pt3(aim_at)) - loc_v
+        if direction.length > 1e-6:
+            d_n = direction.normalized()
+            up_ax = "X" if abs(d_n.y) > 0.9 else "Y"
+            rot_eu = d_n.to_track_quat("Z", up_ax).to_euler()
+        else:
+            rot_eu = mathutils.Euler((0.0, 0.0, 0.0))
+    elif rotation is not None:
+        rot_eu = mathutils.Euler(tuple(float(r) for r in rotation))
+    else:
+        rot_eu = mathutils.Euler((0.0, 0.0, 0.0))
+
+    xform = mathutils.Matrix.Translation(loc_v) @ rot_eu.to_matrix().to_4x4()
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bmesh.ops.transform(bm, matrix=xform, verts=bm.verts)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.location = (0.0, 0.0, 0.0)
+    obj.rotation_euler = (0.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+    return obj
+
+
+def _cad_place_on_bed(target, z_floor=0.0):
+    """Translate `target` vertically so its world bounding-box bottom rests at `z_floor`."""
+    target = _resolve_obj(target)
+    if target is None or target.type != "MESH" or not target.data.vertices:
+        return target
+    min_z = min((target.matrix_world @ v.co).z for v in target.data.vertices)
+    dz = float(z_floor) - min_z
+    if abs(dz) > 1e-5:
+        if target.location.length < 1e-5 and sum(abs(r) for r in target.rotation_euler) < 1e-5:
+            bm = bmesh.new()
+            bm.from_mesh(target.data)
+            bmesh.ops.translate(bm, verts=bm.verts, vec=(0.0, 0.0, dz))
+            bm.to_mesh(target.data)
+            bm.free()
+        else:
+            target.location.z += dz
+    bpy.context.view_layer.update()
+    return target
+
+
+def _cad_audit():
+    """Inspect all printable meshes for manifoldness, connected islands, scale, and Z floor."""
+    results = []
+    issue_msgs = []
+    issues = 0
+    for o in sorted(bpy.data.objects, key=lambda x: x.name):
+        if o.type != "MESH" or o.name.startswith(_MOCKUP_PREFIXES):
+            continue
+        cols = " ".join(c.name for c in o.users_collection).lower()
+        if ("mockup" in cols or "plugs" in cols) and "printable" not in cols:
+            continue
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        non_manifold = sum(1 for e in bm.edges if not e.is_manifold)
+        loose_verts = sum(1 for v in bm.verts if not v.link_edges)
+        islands = _cad_count_mesh_islands(bm)
+        vol = bm.calc_volume(signed=True)
+        bm.free()
+        corners = [o.matrix_world @ mathutils.Vector(c) for c in o.bound_box]
+        min_z = min((c.z for c in corners), default=0.0)
+        max_z = max((c.z for c in corners), default=0.0)
+        scale_ok = all(abs(s - 1.0) < 1e-3 for s in o.scale)
+        flags = []
+        if non_manifold:
+            flags.append(f"non-manifold={non_manifold}")
+        if loose_verts:
+            flags.append(f"loose_verts={loose_verts}")
+        if islands > 1:
+            flags.append(f"disconnected_islands={islands}")
+        if islands == 0:
+            flags.append("empty_mesh")
+        if vol < 0:
+            flags.append("inverted_normals")
+        if not scale_ok:
+            flags.append(f"unapplied_scale={[round(s,3) for s in o.scale]}")
+        if min_z < -0.5:
+            flags.append(f"below_bed(min_Z={min_z:.2f}mm)")
+        if flags:
+            issues += 1
+            issue_msgs.append(f"{o.name}: " + ", ".join(flags))
+        info = {
+            "name": o.name,
+            "dims": [round(o.dimensions.x, 2), round(o.dimensions.y, 2), round(o.dimensions.z, 2)],
+            "min_z": round(min_z, 2),
+            "max_z": round(max_z, 2),
+            "islands": islands,
+            "non_manifold": non_manifold,
+            "loose_verts": loose_verts,
+            "flags": flags,
+        }
+        results.append(info)
+        status = "OK" if not flags else "WARN: " + ", ".join(flags)
+        print(f"  [Audit] {o.name}: {info['dims'][0]}x{info['dims'][1]}x{info['dims'][2]}mm | islands={islands} | min_Z={min_z:.2f}mm | {status}")
+    if not results:
+        issue_msgs.append("No printable mesh objects found in scene.")
+        print("  [Audit] WARN: No printable mesh objects found in scene.")
+    return {"ok": issues == 0 and len(results) > 0, "issues": issues, "issue_messages": issue_msgs, "objects": results}
+
+
+def _cad_cut_parts(target, axis="Z", ratio=0.5, offset=0.0, align_to_bed=True, spacing=20.0, colorize=True):
+    """Cut target object along an axis (Z, X, or Y) into two watertight manifold pieces ready for separate plates."""
+    if isinstance(target, str):
+        target = bpy.data.objects.get(target)
+    if not target or target.type != "MESH":
+        raise ValueError(f"Invalid target object for cad.cut_parts: {target}")
+
+    bpy.ops.object.select_all(action="DESELECT")
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+    ax = str(axis).upper()
+    if ax not in ("X", "Y", "Z"):
+        ax = "Z"
+    idx = {"X": 0, "Y": 1, "Z": 2}[ax]
+
+    bbox = [target.matrix_world @ mathutils.Vector(c) for c in target.bound_box]
+    min_v = min(p[idx] for p in bbox)
+    max_v = max(p[idx] for p in bbox)
+    span = max_v - min_v
+
+    cut_pos = min_v + span * max(0.01, min(0.99, float(ratio))) + float(offset)
+    plane_co = mathutils.Vector((0.0, 0.0, 0.0))
+    plane_no = mathutils.Vector((0.0, 0.0, 0.0))
+    plane_co[idx] = cut_pos
+    plane_no[idx] = 1.0
+
+    suffix_a = "Lower" if ax == "Z" else ("Left" if ax == "X" else "Front")
+    suffix_b = "Upper" if ax == "Z" else ("Right" if ax == "X" else "Back")
+    stem = target.name.split("_Part")[0]
+
+    part_b = target.copy()
+    part_b.data = target.data.copy()
+    target.name = f"{stem}_{suffix_a}"
+    part_b.name = f"{stem}_{suffix_b}"
+    col = target.users_collection[0] if target.users_collection else bpy.context.scene.collection
+    col.objects.link(part_b)
+
+    # Slice Part A
+    bm_a = bmesh.new()
+    bm_a.from_mesh(target.data)
+    bmesh.ops.bisect_plane(
+        bm_a, geom=bm_a.verts[:] + bm_a.edges[:] + bm_a.faces[:],
+        plane_co=plane_co, plane_no=plane_no, clear_outer=True,
+    )
+    open_a = [e for e in bm_a.edges if not e.is_manifold]
+    if open_a:
+        bmesh.ops.holes_fill(bm_a, edges=open_a, sides=0)
+    bmesh.ops.recalc_face_normals(bm_a, faces=bm_a.faces)
+    bm_a.to_mesh(target.data)
+    bm_a.free()
+    target.data.update()
+
+    # Slice Part B
+    bm_b = bmesh.new()
+    bm_b.from_mesh(part_b.data)
+    bmesh.ops.bisect_plane(
+        bm_b, geom=bm_b.verts[:] + bm_b.edges[:] + bm_b.faces[:],
+        plane_co=plane_co, plane_no=-plane_no, clear_outer=True,
+    )
+    open_b = [e for e in bm_b.edges if not e.is_manifold]
+    if open_b:
+        bmesh.ops.holes_fill(bm_b, edges=open_b, sides=0)
+    bmesh.ops.recalc_face_normals(bm_b, faces=bm_b.faces)
+    bm_b.to_mesh(part_b.data)
+    bm_b.free()
+    part_b.data.update()
+
+    parts = [target, part_b]
+    palette = [(0.15, 0.65, 0.60, 1.0), (0.91, 0.49, 0.05, 1.0)]
+    cur_x = 0.0
+    for i, p in enumerate(parts):
+        bpy.ops.object.select_all(action="DESELECT")
+        p.select_set(True)
+        bpy.context.view_layer.objects.active = p
+        bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+        if align_to_bed:
+            min_z = min((p.matrix_world @ mathutils.Vector(c)).z for c in p.bound_box)
+            p.location.z -= min_z
+        if spacing and float(spacing) > 0 and len(parts) > 1:
+            pw = p.dimensions.x
+            if i > 0:
+                cur_x += float(spacing) + pw * 0.5
+                p.location.x += cur_x
+                cur_x += pw * 0.5
+        if colorize:
+            _cad_color(p, palette[i % len(palette)])
+    bpy.context.view_layer.update()
+    return tuple(parts)
+
+
+def _cad_separate_loose(target, align_to_bed=True, spacing=20.0, colorize=True):
+    """Separate disjoint loose bodies/shells within target object into individual printable meshes."""
+    if isinstance(target, str):
+        target = bpy.data.objects.get(target)
+    if not target or target.type != "MESH":
+        raise ValueError(f"Invalid target object for cad.separate_loose: {target}")
+
+    bpy.ops.object.select_all(action="DESELECT")
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.separate(type="LOOSE")
+    bpy.ops.object.mode_set(mode="OBJECT")
+    parts = [o for o in bpy.context.selected_objects if o.type == "MESH"]
+    stem = target.name.split("_Part")[0]
+    for i, p in enumerate(parts):
+        p.name = f"{stem}_Part_{i+1}"
+
+    palette = [
+        (0.15, 0.65, 0.60, 1.0), (0.91, 0.49, 0.05, 1.0),
+        (0.23, 0.51, 0.96, 1.0), (0.85, 0.20, 0.25, 1.0),
+        (0.55, 0.25, 0.75, 1.0), (0.20, 0.75, 0.35, 1.0),
+    ]
+    cur_x = 0.0
+    for i, p in enumerate(parts):
+        bpy.ops.object.select_all(action="DESELECT")
+        p.select_set(True)
+        bpy.context.view_layer.objects.active = p
+        bpy.ops.object.origin_set(type="ORIGIN_GEOMETRY", center="BOUNDS")
+        if align_to_bed:
+            min_z = min((p.matrix_world @ mathutils.Vector(c)).z for c in p.bound_box)
+            p.location.z -= min_z
+        if spacing and float(spacing) > 0 and len(parts) > 1:
+            pw = p.dimensions.x
+            if i > 0:
+                cur_x += float(spacing) + pw * 0.5
+                p.location.x += cur_x
+                cur_x += pw * 0.5
+        if colorize:
+            _cad_color(p, palette[i % len(palette)])
+    bpy.context.view_layer.update()
+    return tuple(parts)
+
+
 def _build_cad_module():
     mod = types.ModuleType("cad")
     mod.clear = _cad_clear
@@ -592,6 +1129,18 @@ def _build_cad_module():
     mod.hole = _cad_hole
     mod.magnet_pocket = _cad_magnet_pocket
     mod.m3_hole = _cad_m3_hole
+    mod.strut = _cad_strut
+    mod.slot = _cad_slot
+    mod.counterbore_hole = _cad_counterbore_hole
+    mod.oriented_box = _cad_oriented_box
+    mod.place_on_bed = _cad_place_on_bed
+    mod.aim_rotation = _cad_aim_rotation
+    mod.aim_at = _cad_aim_at
+    mod.local_pocket = _cad_local_pocket
+    mod.audit = _cad_audit
+    mod.audit_geometry = _cad_audit
+    mod.cut_parts = _cad_cut_parts
+    mod.separate_loose = _cad_separate_loose
     return mod
 
 
@@ -768,6 +1317,10 @@ def _install_bpy_shims():
             ops_overrides["export_mesh"] = _OpsSubProxy(orig_export_mesh, {"stl": _safe_stl_export})
 
     bpy.ops = _OpsSubProxy(orig_ops, ops_overrides)
+    try:
+        setattr(bpy, "cad", cad)
+    except Exception:
+        pass
 
 
 _BSDF_ALIASES = (
@@ -790,9 +1343,9 @@ def _log_last_exec(code_str, status, stdout_txt, stderr_txt):
         os.makedirs(STUDIO_DIR, exist_ok=True)
         with open(LAST_EXEC_LOG, "w", encoding="utf-8") as fh:
             fh.write(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} | status={status} ===\n")
-            fh.write("--- CODE ---\n" + code_str[:4000] + "\n")
+            fh.write("--- CODE ---\n" + code_str[:24000] + "\n")
             if stdout_txt:
-                fh.write("--- STDOUT ---\n" + stdout_txt[:2000] + "\n")
+                fh.write("--- STDOUT ---\n" + stdout_txt[:4000] + "\n")
             if stderr_txt:
                 fh.write("--- STDERR ---\n" + stderr_txt[:4000] + "\n")
     except Exception:
@@ -809,16 +1362,23 @@ def _self_heal_with_ollama(broken_code, tb_text):
         "Available `cad` functions (NO other cad functions exist):\n"
         "- cad.clear()\n"
         "- cad.rounded_plate(name, width, depth, thickness, corner_radius=4.0, rim_width=0.0, rim_height=0.0, location=(0,0,0), color=(0.1,0.12,0.16,1.0), rim_color=(0.91,0.49,0.05,1.0))\n"
-        "- cad.box(name, width, depth, height, location=(0,0,0), corner_radius=0.0, bevel=0.0, color=(0.7,0.7,0.7,1.0))\n"
-        "- cad.cylinder(name, diameter=10.0, height=5.0, location=(0,0,0), color=(0.7,0.7,0.7,1.0))\n"
+        "- cad.box(name, width, depth, height, location=(0,0,0), corner_radius=0.0, bevel=0.0, color=(0.7,0.7,0.7,1.0), mockup=False, rotation=(0,0,0))\n"
+        "- cad.cylinder(name, diameter=10.0, height=5.0, location=(0,0,0), color=(0.7,0.7,0.7,1.0), mockup=False)\n"
         "- cad.tube(name, outer_diameter=12.0, inner_diameter=8.0, height=10.0, location=(0,0,0), color=None)\n"
+        "- cad.strut(name, start=(x1,y1,z1), end=(x2,y2,z2), width=10.0, thickness=6.0, flat_bottom=False, flat_bottom_z=None, color=None)\n"
+        "- cad.oriented_box(name, width=26.0, depth=22.0, height=10.0, location=(x,y,z), aim_at=(tx,ty,tz), pocket_size=(pw,pd,ph), aperture_diameter=9.5, usb_slot_size=(sw,sh), corner_radius=2.5, color=None)\n"
+        "- cad.place_on_bed(target, z_floor=0.0)\n"
         "- cad.text(name, text='HELLO', size=10.0, height=1.2, location=(0,0,2.0), color=(0.91,0.49,0.05,1.0))\n"
         "- cad.image_relief(name='Logo_Relief', image_path=None, width=42.0, depth=28.0, height=1.2, location=(0,0,2.0), color=(0.91,0.49,0.05,1.0))\n"
         "- cad.bevel(target, offset=1.0, segments=4) / cad.color(target, rgba)\n"
-        "- cad.cut(target, cutter) / cad.union(target, tool) / cad.hole(target, diameter=3.4, depth=100.0, location=(0,0,0))\n"
-        "- cad.magnet_pocket(target, diameter=6.25, depth=2.20, location=(0,0,0))\n"
-        "- cad.m3_hole(target, depth=20.0, location=(0,0,0))\n"
-        "NEVER use `bpy` or `bmesh` directly unless strictly needed; prefer `cad.clear()`, `cad.rounded_plate(...)`, `cad.box(...)`, `cad.text(...)`.\n"
+        "- cad.cut(target, cutter) / cad.union(target, tool) / cad.hole(target, diameter=3.4, depth=100.0, location=(0,0,0), axis='Z')\n"
+        "- cad.slot(target, start=(x1,y1,z), end=(x2,y2,z), diameter=3.4, depth=40.0)\n"
+        "- cad.counterbore_hole(target, diameter=3.4, cb_diameter=6.4, cb_depth=3.5, depth=40.0, location=(x,y,z), axis='Z', flip=False)\n"
+        "- cad.aim_at(obj, target_point, forward='-Z', up='Y')\n"
+        "- cad.local_pocket(target, width=21.6, depth=18.2, height=4.0, local_offset=(0,0,3.5), corner_radius=1.0, lens_hole_dia=0.0, lens_offset=(0,0))\n"
+        "- cad.magnet_pocket(target, diameter=6.25, depth=2.20, location=(0,0,0)) / cad.m3_hole(target, depth=20.0, location=(0,0,0))\n"
+        "- cad.audit_geometry()\n"
+        "NEVER use `bpy` or `bmesh` directly unless strictly needed; prefer `cad.*` helpers.\n"
         "Preserve the intended dimensions, text, borders, holes, and uploaded images from the broken script.\n"
         "Output ONLY ONE ```python``` block starting with `import cad` and `cad.clear()`."
     )
@@ -832,7 +1392,7 @@ def _self_heal_with_ollama(broken_code, tb_text):
         "model": "qwen2.5-coder:7b",
         "stream": False,
         "think": False,
-        "options": {"temperature": 0.1, "num_ctx": 8192},
+        "options": {"temperature": 0.1, "num_ctx": 8192, "num_thread": 4},
         "messages": [
             {"role": "system", "content": sys_msg},
             {"role": "user", "content": user_msg},
@@ -840,8 +1400,12 @@ def _self_heal_with_ollama(broken_code, tb_text):
     }).encode("utf-8")
     for base in ("http://127.0.0.1:11435", "http://127.0.0.1:11434"):
         try:
+            endpoint = base + "/api/chat"
+            parsed = urllib.parse.urlparse(endpoint)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                continue
             req = urllib.request.Request(
-                base + "/api/chat", data=payload,
+                endpoint, data=payload,
                 headers={"Content-Type": "application/json"}, method="POST",
             )
             with urllib.request.urlopen(req, timeout=45) as resp:

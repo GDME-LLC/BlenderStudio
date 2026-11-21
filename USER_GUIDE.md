@@ -90,6 +90,7 @@ Blender Studio automatically classifies every mesh object in your scene so mocku
 The right column acts as a live Python REPL attached to Blender's main thread. Press **`Ctrl+Enter`** at any time to execute the editor buffer.
 
 ### Built-in Macros
+- **`✂ Cut`:** Opens the interactive Model Cutting & Part Separation dialog (or loads the `cut_split` Python macro). Easily bisects models along Z (horizontal), X (lateral), or Y (depth), or separates disjoint loose bodies into independent, watertight manifold parts grounded flat on the build bed (`Z=0`) with configurable spacing ready for multi-plate printing.
 - **`Rig`:** Adds or updates 3-point sun lighting (`KeyLight`, `FillLight`, `RimLight`) and `RenderCam` pointed at your assembly center.
 - **`+Magnet`:** Inserts a `Ø6.25 × 2.20 mm` press-fit cutout/mockup cylinder (`Mockup_Mag_N`) for standard `6×2 mm` neodymium discs.
 - **`+M3`:** Inserts an M3 clearance shaft (`Ø3.4 mm`) + DIN 934 captive hex nut pocket (`5.65 mm` across flats) mockup (`M_Screw_M3_N`).

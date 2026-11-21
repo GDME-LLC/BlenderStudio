@@ -44,6 +44,7 @@ One-page cheat sheet for daily CAD modeling, inspection, and slicing inside Orca
 
 | Button | Action |
 | :--- | :--- |
+| **`✂ Cut`** | Splits active mesh or selected object into watertight manifold halves along Z/X/Y or separates loose disconnected shells, grounding each part to `Z=0` with spacing ready for separate plates. |
 | **`Rig`** | Adds or updates `KeyLight`, `FillLight`, `RimLight`, and `RenderCam` aimed at the scene bounding-box center. |
 | **`+Magnet`** | Adds `Mockup_Mag_N` (`Ø6.25 × 2.20 mm`) into `Hardware_Mockups` for press-fit `6×2 mm` neodymium disc pockets. |
 | **`+M3`** | Adds `M_Screw_M3_N` (`Ø3.4 mm` clearance shaft + `5.65 mm` AF DIN 934 hex nut pocket) into `Hardware_Mockups`. |
@@ -80,6 +81,8 @@ One-page cheat sheet for daily CAD modeling, inspection, and slicing inside Orca
   - `cad.cylinder(name, diameter, height, location=(0,0,0))` / `cad.tube(name, outer_diameter, inner_diameter, height)`
   - `cad.text(name, text='...', size=10.0, height=1.2, location=(0,0,2.0))` (auto-converted to manifold `MESH`)
   - `cad.image_relief(name, image_path=None, width=42.0, depth=28.0, height=1.2, location=(0,0,2.0))` (extrudes uploaded PNG/JPG silhouette)
+  - `cad.cut_parts(target, axis="Z", ratio=0.5, offset=0.0, align_to_bed=True, spacing=20.0)` (splits into watertight manifold plate parts)
+  - `cad.separate_loose(target, align_to_bed=True, spacing=20.0)` (splits disjoint bodies into individual meshes)
   - `cad.cut(target, cutter)` / `cad.union(target, tool)` / `cad.hole(target, diameter, depth, location)` / `cad.magnet_pocket(...)` / `cad.m3_hole(...)`
 
 ```python
